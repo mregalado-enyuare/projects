@@ -1,0 +1,40 @@
+﻿# Build outputs
+Debug/
+Release/
+
+# Compiled object & dependency files
+*.o
+*.d
+*.su
+*.cyclo
+*.dbo
+
+# Linker/map outputs
+*.elf
+*.map
+*.list
+*.hex
+*.bin
+
+# IDE metadata
+.metadata/
+.settings/
+RemoteSystemsTempFiles/
+*.launch
+*.pydevproject
+
+# CubeIDE build system files
+subdir.mk
+objects.list
+objects.mk
+sources.mk
+makefile
+
+# VS Code / Visual Studio
+.vscode/
+.vs/
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
