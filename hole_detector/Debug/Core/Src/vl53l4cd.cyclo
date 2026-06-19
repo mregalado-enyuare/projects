@@ -1,0 +1,13 @@
+../Core/Src/vl53l4cd.c:40:16:rd_byte	1
+../Core/Src/vl53l4cd.c:46:16:wr_byte	1
+../Core/Src/vl53l4cd.c:52:16:rd_word	2
+../Core/Src/vl53l4cd.c:61:16:wr_word	1
+../Core/Src/vl53l4cd.c:68:16:rd_dword	2
+../Core/Src/vl53l4cd.c:78:16:wr_dword	1
+../Core/Src/vl53l4cd.c:87:16:VL53L4CD_Init	6
+../Core/Src/vl53l4cd.c:131:16:VL53L4CD_SetRangeTiming	8
+../Core/Src/vl53l4cd.c:182:16:VL53L4CD_StartRanging	4
+../Core/Src/vl53l4cd.c:203:16:VL53L4CD_StopRanging	1
+../Core/Src/vl53l4cd.c:208:16:VL53L4CD_CheckForDataReady	1
+../Core/Src/vl53l4cd.c:221:16:VL53L4CD_ClearInterrupt	1
+../Core/Src/vl53l4cd.c:226:16:VL53L4CD_GetResult	3

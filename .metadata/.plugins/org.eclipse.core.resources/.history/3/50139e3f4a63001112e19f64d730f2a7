@@ -1,0 +1,51 @@
+#include "cup_detector.h"
+#include "hcsr04.h"
+
+SlotStatus_t slotStatus[6];
+
+void CupDetector_Update(void)
+{
+    for(int i = 0; i < NUM_SENSORS; i++)
+    {
+        float d = sensors[i].distance_cm;
+
+        if(d < 0)
+        {
+            slotStatus[i] = SLOT_ERROR;
+        }
+        else if(d >= 36.0f)
+        {
+            slotStatus[i] = SLOT_EMPTY;
+        }
+        else if(d >= 19.0f && d <= 25.0f)
+        {
+            slotStatus[i] = SLOT_CUP_PRESENT;     // cup ~23cm at 41cm height
+        }
+        else if(d >= 25.1f && d <= 35.9f)
+        {
+            slotStatus[i] = SLOT_TRASH;            // trash or off-center object
+        }
+        else
+        {
+            slotStatus[i] = SLOT_OBSTRUCTION;
+        }
+    }
+}
+
+SystemStatus_t GetSystemConsensus(void)
+{
+    int cupCount   = 0;
+    int trashCount = 0;
+
+    for(int i = 0; i < NUM_SENSORS; i++)
+    {
+        if(slotStatus[i] == SLOT_CUP_PRESENT)  cupCount++;
+        else if(slotStatus[i] == SLOT_TRASH)   trashCount++;
+    }
+
+    if(trashCount >= 1)            return SYSTEM_TRASH_DETECTED;
+    else if(cupCount >= 1)         return SYSTEM_CUP_DETECTED;
+    else if(trashCount == 0 &&
+            cupCount == 0)         return SYSTEM_ALL_EMPTY;
+    else                           return SYSTEM_MIXED;
+}

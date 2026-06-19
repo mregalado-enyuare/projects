@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<session version="1.0">&#x0A;<refactoring comment="Rename resource &apos;vl53l4cd_test/VL53L4CD/core&apos; to &apos;Core&apos;" description="Rename resource &apos;core&apos;" flags="7" id="org.eclipse.ltk.core.refactoring.rename.resource" input="VL53L4CD/core" name="Core" stamp="1781019568984" updateReferences="true"/>&#x0A;<refactoring comment="Rename resource &apos;vl53l4cd_test/VL53L4CD/Core&apos; to &apos;core&apos;" description="Rename resource &apos;Core&apos;" flags="7" id="org.eclipse.ltk.core.refactoring.rename.resource" input="VL53L4CD/Core" name="core" stamp="1781019585077" updateReferences="true"/>
+</session>

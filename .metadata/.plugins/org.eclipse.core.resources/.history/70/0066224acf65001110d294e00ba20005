@@ -1,0 +1,227 @@
+/* USER CODE BEGIN Header */
+/* USER CODE END Header */
+#include "main.h"
+
+/* USER CODE BEGIN Includes */
+#include "vl53l4cd.h"
+#include <stdio.h>
+#include <string.h>
+/* USER CODE END Includes */
+
+I2C_HandleTypeDef  hi2c3;
+UART_HandleTypeDef huart3;
+
+/* USER CODE BEGIN PV */
+volatile uint16_t g_distance_mm    = 0;
+volatile uint8_t  g_distance_valid = 0;
+#define DISTANCE_PRINT_INTERVAL_MS  500U
+#define SURFACE_MAX_MM              35U
+#define HOLE_MIN_MM                 50U
+/* USER CODE END PV */
+
+void SystemClock_Config(void);
+static void MX_GPIO_Init(void);
+static void MX_USART3_UART_Init(void);
+static void MX_I2C3_Init(void);
+
+/* USER CODE BEGIN PFP */
+void Distance_Init(void);
+void Distance_Poll(void);
+void Check_Orientation(void);
+/* USER CODE END PFP */
+
+int main(void)
+{
+  /* USER CODE BEGIN 1 */
+  /* USER CODE END 1 */
+
+  HAL_Init();
+  SystemClock_Config();
+
+  MX_GPIO_Init();
+  MX_USART3_UART_Init();
+  MX_I2C3_Init();
+
+  /* USER CODE BEGIN 2 */
+  HAL_UART_Transmit(&huart3, (uint8_t *)"BOOT\r\n", 6, 1000);
+  Distance_Init();
+  /* USER CODE END 2 */
+
+  /* USER CODE BEGIN WHILE */
+  while (1)
+  {
+    /* USER CODE END WHILE */
+
+    /* USER CODE BEGIN 3 */
+    Distance_Poll();
+    Check_Orientation();
+  }
+  /* USER CODE END 3 */
+}
+
+void SystemClock_Config(void)
+{
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+  HAL_PWREx_ConfigSupply(PWR_LDO_SUPPLY);
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE0);
+  while (!__HAL_PWR_GET_FLAG(PWR_FLAG_VOSRDY)) {}
+
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI48 | RCC_OSCILLATORTYPE_LSI
+                                   | RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState       = RCC_HSE_ON;
+  RCC_OscInitStruct.LSIState       = RCC_LSI_ON;
+  RCC_OscInitStruct.HSI48State     = RCC_HSI48_ON;
+  RCC_OscInitStruct.PLL.PLLState   = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource  = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLM       = 4;
+  RCC_OscInitStruct.PLL.PLLN       = 275;
+  RCC_OscInitStruct.PLL.PLLP       = 1;
+  RCC_OscInitStruct.PLL.PLLQ       = 4;
+  RCC_OscInitStruct.PLL.PLLR       = 2;
+  RCC_OscInitStruct.PLL.PLLRGE     = RCC_PLL1VCIRANGE_1;
+  RCC_OscInitStruct.PLL.PLLVCOSEL  = RCC_PLL1VCOWIDE;
+  RCC_OscInitStruct.PLL.PLLFRACN   = 0;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) Error_Handler();
+
+  RCC_ClkInitStruct.ClockType      = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK
+                                   | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2
+                                   | RCC_CLOCKTYPE_D3PCLK1 | RCC_CLOCKTYPE_D1PCLK1;
+  RCC_ClkInitStruct.SYSCLKSource   = RCC_SYSCLKSOURCE_PLLCLK;
+  RCC_ClkInitStruct.SYSCLKDivider  = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.AHBCLKDivider  = RCC_HCLK_DIV2;
+  RCC_ClkInitStruct.APB3CLKDivider = RCC_APB3_DIV2;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_APB1_DIV2;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_APB2_DIV2;
+  RCC_ClkInitStruct.APB4CLKDivider = RCC_APB4_DIV2;
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_3) != HAL_OK) Error_Handler();
+}
+
+static void MX_I2C3_Init(void)
+{
+  hi2c3.Instance              = I2C3;
+  hi2c3.Init.Timing           = 0x307075B1;
+  hi2c3.Init.OwnAddress1      = 0;
+  hi2c3.Init.AddressingMode   = I2C_ADDRESSINGMODE_7BIT;
+  hi2c3.Init.DualAddressMode  = I2C_DUALADDRESS_DISABLE;
+  hi2c3.Init.OwnAddress2      = 0;
+  hi2c3.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+  hi2c3.Init.GeneralCallMode  = I2C_GENERALCALL_DISABLE;
+  hi2c3.Init.NoStretchMode    = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c3) != HAL_OK) Error_Handler();
+  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c3, I2C_ANALOGFILTER_ENABLE) != HAL_OK) Error_Handler();
+  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c3, 0) != HAL_OK) Error_Handler();
+}
+
+static void MX_USART3_UART_Init(void)
+{
+  huart3.Instance            = USART3;
+  huart3.Init.BaudRate       = 115200;
+  huart3.Init.WordLength     = UART_WORDLENGTH_8B;
+  huart3.Init.StopBits       = UART_STOPBITS_1;
+  huart3.Init.Parity         = UART_PARITY_NONE;
+  huart3.Init.Mode           = UART_MODE_TX_RX;
+  huart3.Init.HwFlowCtl      = UART_HWCONTROL_NONE;
+  huart3.Init.OverSampling   = UART_OVERSAMPLING_16;
+  huart3.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart3.Init.ClockPrescaler = UART_PRESCALER_DIV1;
+  huart3.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  if (HAL_UART_Init(&huart3) != HAL_OK) Error_Handler();
+  if (HAL_UARTEx_SetTxFifoThreshold(&huart3, UART_TXFIFO_THRESHOLD_1_8) != HAL_OK) Error_Handler();
+  if (HAL_UARTEx_SetRxFifoThreshold(&huart3, UART_RXFIFO_THRESHOLD_1_8) != HAL_OK) Error_Handler();
+  if (HAL_UARTEx_DisableFifoMode(&huart3) != HAL_OK) Error_Handler();
+}
+
+static void MX_GPIO_Init(void)
+{
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+  __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_GPIOD_CLK_ENABLE();
+  __HAL_RCC_GPIOE_CLK_ENABLE();
+  __HAL_RCC_GPIOF_CLK_ENABLE();
+  __HAL_RCC_GPIOG_CLK_ENABLE();
+  __HAL_RCC_GPIOH_CLK_ENABLE();
+}
+
+/* USER CODE BEGIN 4 */
+void Distance_Init(void)
+{
+  VL53L4CD_Error vst = VL53L4CD_Init(&hi2c3);
+  if (vst != VL53L4CD_OK) {
+    char msg[48];
+    int  n = snprintf(msg, sizeof(msg), "VL53L4CD init failed: %d\r\n", vst);
+    HAL_UART_Transmit(&huart3, (uint8_t *)msg, (uint16_t)n, 1000);
+    return;
+  }
+  VL53L4CD_StartRanging(&hi2c3);
+  HAL_UART_Transmit(&huart3, (uint8_t *)"VL53L4CD ready\r\n", 16, 1000);
+}
+
+void Distance_Poll(void)
+{
+  static uint32_t last_print_ms = 0;
+
+  uint8_t ready = 0;
+  VL53L4CD_CheckForDataReady(&hi2c3, &ready);
+  if (!ready) return;
+
+  VL53L4CD_Result_t res;
+  VL53L4CD_GetResult(&hi2c3, &res);
+  VL53L4CD_ClearInterrupt(&hi2c3);
+
+  if (res.range_status == 0) {
+    g_distance_mm    = res.distance_mm;
+    g_distance_valid = 1;
+  } else {
+    g_distance_valid = 0;
+  }
+
+  uint32_t now = HAL_GetTick();
+  if ((now - last_print_ms) >= DISTANCE_PRINT_INTERVAL_MS) {
+    last_print_ms = now;
+    char msg[48];
+    int  n;
+    if (g_distance_valid)
+      n = snprintf(msg, sizeof(msg), "Dist: %u mm\r\n", g_distance_mm);
+    else
+      n = snprintf(msg, sizeof(msg), "Dist: err (status=%u)\r\n", res.range_status);
+    HAL_UART_Transmit(&huart3, (uint8_t *)msg, (uint16_t)n, 1000);
+  }
+}
+
+void Check_Orientation(void)
+{
+  static uint8_t last_state = 0xFF;  /* FF = unknown, 0 = off, 1 = correct */
+
+  if (!g_distance_valid) return;
+
+  uint8_t current_state;
+  if (g_distance_mm >= HOLE_MIN_MM)
+    current_state = 1;
+  else if (g_distance_mm <= SURFACE_MAX_MM)
+    current_state = 0;
+  else
+    return;  /* in between — ignore */
+
+  /* only print when state changes to avoid flooding */
+  if (current_state != last_state) {
+    last_state = current_state;
+    if (current_state == 1)
+      HAL_UART_Transmit(&huart3, (uint8_t *)"Orientation correct\r\n", 21, 1000);
+    else
+      HAL_UART_Transmit(&huart3, (uint8_t *)"Lid orientation off\r\n", 21, 1000);
+  }
+}
+/* USER CODE END 4 */
+
+void Error_Handler(void)
+{
+  /* USER CODE BEGIN Error_Handler_Debug */
+  /* USER CODE END Error_Handler_Debug */
+}
+
+#ifdef USE_FULL_ASSERT
+void assert_failed(uint8_t *file, uint32_t line) {}
+#endif

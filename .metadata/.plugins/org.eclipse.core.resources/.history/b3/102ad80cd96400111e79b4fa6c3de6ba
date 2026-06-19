@@ -1,0 +1,236 @@
+#include "vl53l4cd.h"
+#include <string.h>
+
+/* Register addresses */
+#define REG_FIRMWARE_STATUS     0x00E5U
+#define REG_VHV_LOOP_BOUND      0x0008U
+#define REG_GPIO_HV_MUX_CTRL    0x0030U
+#define REG_GPIO_TIO_HV_STATUS  0x0031U
+#define REG_INTERMEASUREMENT_MS 0x006CU
+#define REG_RANGE_CONFIG_A      0x005EU
+#define REG_RANGE_CONFIG_B      0x0061U
+#define REG_SYSTEM_INT_CLEAR    0x0086U
+#define REG_SYSTEM_START        0x0087U
+#define REG_RESULT_STATUS       0x0089U
+#define REG_RESULT_SPAD_NB      0x008CU
+#define REG_RESULT_SIGNAL_RATE  0x008EU
+#define REG_RESULT_AMBIENT_RATE 0x0090U
+#define REG_RESULT_SIGMA        0x0092U
+#define REG_RESULT_DISTANCE     0x0096U
+#define REG_OSC_CALIBRATE_VAL   0x00DEU
+#define REG_OSC_FREQUENCY       0x0006U
+
+static const uint8_t VL53L4CD_DEFAULT_CFG[] = {
+  0x12, 0x00, 0x00, 0x11, 0x02, 0x00, 0x02, 0x08,
+  0x00, 0x08, 0x10, 0x01, 0x01, 0x00, 0x00, 0x00,
+  0x00, 0xff, 0x00, 0x0F, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x20, 0x0b, 0x00, 0x00, 0x02, 0x14, 0x21,
+  0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0xc8,
+  0x00, 0x00, 0x38, 0xff, 0x01, 0x00, 0x08, 0x00,
+  0x00, 0x01, 0xcc, 0x07, 0x01, 0xf1, 0x05, 0x00,
+  0xa0, 0x00, 0x80, 0x08, 0x38, 0x00, 0x00, 0x00,
+  0x00, 0x0f, 0x89, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x01, 0x07, 0x05, 0x06, 0x06, 0x00,
+  0x00, 0x02, 0xc7, 0xff, 0x9B, 0x00, 0x00, 0x00,
+  0x01, 0x00, 0x00
+};
+
+/* --- low-level I2C helpers -------------------------------------------- */
+
+static uint8_t rd_byte(I2C_HandleTypeDef *h, uint16_t reg, uint8_t *v)
+{
+    return HAL_I2C_Mem_Read(h, VL53L4CD_ADDR, reg,
+                            I2C_MEMADD_SIZE_16BIT, v, 1, 100) != HAL_OK;
+}
+
+static uint8_t wr_byte(I2C_HandleTypeDef *h, uint16_t reg, uint8_t v)
+{
+    return HAL_I2C_Mem_Write(h, VL53L4CD_ADDR, reg,
+                             I2C_MEMADD_SIZE_16BIT, &v, 1, 100) != HAL_OK;
+}
+
+static uint8_t rd_word(I2C_HandleTypeDef *h, uint16_t reg, uint16_t *v)
+{
+    uint8_t buf[2];
+    if (HAL_I2C_Mem_Read(h, VL53L4CD_ADDR, reg,
+                         I2C_MEMADD_SIZE_16BIT, buf, 2, 100) != HAL_OK) return 1;
+    *v = ((uint16_t)buf[0] << 8) | buf[1];
+    return 0;
+}
+
+static uint8_t wr_word(I2C_HandleTypeDef *h, uint16_t reg, uint16_t v)
+{
+    uint8_t buf[2] = { v >> 8, v & 0xFF };
+    return HAL_I2C_Mem_Write(h, VL53L4CD_ADDR, reg,
+                             I2C_MEMADD_SIZE_16BIT, buf, 2, 100) != HAL_OK;
+}
+
+static uint8_t rd_dword(I2C_HandleTypeDef *h, uint16_t reg, uint32_t *v)
+{
+    uint8_t buf[4];
+    if (HAL_I2C_Mem_Read(h, VL53L4CD_ADDR, reg,
+                         I2C_MEMADD_SIZE_16BIT, buf, 4, 100) != HAL_OK) return 1;
+    *v = ((uint32_t)buf[0] << 24) | ((uint32_t)buf[1] << 16)
+       | ((uint32_t)buf[2] << 8)  |  (uint32_t)buf[3];
+    return 0;
+}
+
+static uint8_t wr_dword(I2C_HandleTypeDef *h, uint16_t reg, uint32_t v)
+{
+    uint8_t buf[4] = { v >> 24, v >> 16, v >> 8, v & 0xFF };
+    return HAL_I2C_Mem_Write(h, VL53L4CD_ADDR, reg,
+                             I2C_MEMADD_SIZE_16BIT, buf, 4, 100) != HAL_OK;
+}
+
+/* --- public API -------------------------------------------------------- */
+
+VL53L4CD_Error VL53L4CD_Init(I2C_HandleTypeDef *hi2c)
+{
+    VL53L4CD_Error st = VL53L4CD_OK;
+
+    /* Write default configuration */
+    uint8_t cfg_buf[sizeof(VL53L4CD_DEFAULT_CFG)];
+    memcpy(cfg_buf, VL53L4CD_DEFAULT_CFG, sizeof(cfg_buf));
+    if (HAL_I2C_Mem_Write(hi2c, VL53L4CD_ADDR, 0x002D,
+                          I2C_MEMADD_SIZE_16BIT,
+                          cfg_buf, sizeof(cfg_buf), 1000) != HAL_OK)
+        return 1;
+
+    /* VHV init pulse */
+    st |= wr_byte(hi2c, REG_SYSTEM_START, 0x40);
+    HAL_Delay(200);
+    st |= VL53L4CD_ClearInterrupt(hi2c);
+    st |= VL53L4CD_StopRanging(hi2c);
+    HAL_Delay(10);
+
+    st |= wr_byte(hi2c, REG_VHV_LOOP_BOUND, 0x09);
+    st |= wr_byte(hi2c, 0x000B, 0x00);
+    st |= wr_word(hi2c, 0x0024, 0x0500);
+
+    /* ignore timing error */
+    VL53L4CD_SetRangeTiming(hi2c, 50, 0);
+
+    return st;
+}
+
+VL53L4CD_Error VL53L4CD_SetRangeTiming(I2C_HandleTypeDef *hi2c,
+                                        uint32_t timing_budget_ms,
+                                        uint32_t inter_measurement_ms)
+{
+    VL53L4CD_Error st = VL53L4CD_OK;
+    uint16_t osc_freq = 0, clock_pll = 0, ms_byte;
+    uint32_t macro_period_us, timing_budget_us, ls_byte, tmp;
+
+    if (timing_budget_ms < 10 || timing_budget_ms > 200)
+        return VL53L4CD_ERR_INVALID;
+
+    st |= rd_word(hi2c, REG_OSC_FREQUENCY, &osc_freq);
+    if (osc_freq == 0) return VL53L4CD_ERR_INVALID;
+
+    timing_budget_us = timing_budget_ms * 1000U;
+    macro_period_us  = ((uint32_t)2304 * ((uint32_t)0x40000000 / osc_freq)) >> 6;
+
+    if (inter_measurement_ms == 0) {
+        st |= wr_dword(hi2c, REG_INTERMEASUREMENT_MS, 0);
+        timing_budget_us -= 2500U;
+    } else if (inter_measurement_ms > timing_budget_ms) {
+        st |= rd_word(hi2c, REG_OSC_CALIBRATE_VAL, &clock_pll);
+        clock_pll &= 0x3FF;
+        float factor = 1.055f * (float)inter_measurement_ms * (float)clock_pll;
+        st |= wr_dword(hi2c, REG_INTERMEASUREMENT_MS, (uint32_t)factor);
+        timing_budget_us -= 4300U;
+        timing_budget_us /= 2U;
+    } else {
+        return VL53L4CD_ERR_INVALID;
+    }
+
+    ms_byte = 0;
+    timing_budget_us <<= 12;
+    tmp = macro_period_us * 16U;
+    ls_byte = ((timing_budget_us + ((tmp >> 6) >> 1)) / (tmp >> 6)) - 1U;
+    while ((ls_byte & 0xFFFFFF00U) > 0U) { ls_byte >>= 1; ms_byte++; }
+    st |= wr_word(hi2c, REG_RANGE_CONFIG_A,
+                  (uint16_t)((ms_byte << 8) | (ls_byte & 0xFF)));
+
+    ms_byte = 0;
+    tmp = macro_period_us * 12U;
+    ls_byte = ((timing_budget_us + ((tmp >> 6) >> 1)) / (tmp >> 6)) - 1U;
+    while ((ls_byte & 0xFFFFFF00U) > 0U) { ls_byte >>= 1; ms_byte++; }
+    st |= wr_word(hi2c, REG_RANGE_CONFIG_B,
+                  (uint16_t)((ms_byte << 8) | (ls_byte & 0xFF)));
+
+    return st;
+}
+
+VL53L4CD_Error VL53L4CD_StartRanging(I2C_HandleTypeDef *hi2c)
+{
+    VL53L4CD_Error st = VL53L4CD_OK;
+    uint32_t tmp;
+
+    st |= rd_dword(hi2c, REG_INTERMEASUREMENT_MS, &tmp);
+    st |= wr_byte(hi2c, REG_SYSTEM_START, (tmp == 0) ? 0x21 : 0x40);
+    HAL_Delay(50);
+    st |= VL53L4CD_ClearInterrupt(hi2c);
+    return st;
+}
+
+VL53L4CD_Error VL53L4CD_StopRanging(I2C_HandleTypeDef *hi2c)
+{
+    return wr_byte(hi2c, REG_SYSTEM_START, 0x00);
+}
+
+VL53L4CD_Error VL53L4CD_CheckForDataReady(I2C_HandleTypeDef *hi2c, uint8_t *is_ready)
+{
+    VL53L4CD_Error st = VL53L4CD_OK;
+    uint8_t temp, int_pol;
+
+    st |= rd_byte(hi2c, REG_GPIO_HV_MUX_CTRL, &temp);
+    int_pol = ((temp & 0x10) >> 4) ? 0 : 1;
+
+    st |= rd_byte(hi2c, REG_GPIO_TIO_HV_STATUS, &temp);
+    *is_ready = ((temp & 1U) == int_pol) ? 1 : 0;
+    return st;
+}
+
+VL53L4CD_Error VL53L4CD_ClearInterrupt(I2C_HandleTypeDef *hi2c)
+{
+    return wr_byte(hi2c, REG_SYSTEM_INT_CLEAR, 0x01);
+}
+
+VL53L4CD_Error VL53L4CD_GetResult(I2C_HandleTypeDef *hi2c, VL53L4CD_Result_t *r)
+{
+    VL53L4CD_Error st = VL53L4CD_OK;
+    uint8_t  raw_status;
+    uint16_t tmp16;
+
+    static const uint8_t status_rtn[24] = {
+        255, 255, 255, 5, 2, 4, 1, 7, 3,
+        0, 255, 255, 9, 13, 255, 255, 255, 255, 10, 6,
+        255, 255, 11, 12
+    };
+
+    st |= rd_byte(hi2c, REG_RESULT_STATUS, &raw_status);
+    raw_status &= 0x1F;
+    r->range_status = (raw_status < 24) ? status_rtn[raw_status] : 255;
+
+    st |= rd_word(hi2c, REG_RESULT_SPAD_NB, &tmp16);
+    r->number_of_spad = tmp16 / 256;
+    if (r->number_of_spad == 0) { r->range_status = 255; return st; }
+
+    st |= rd_word(hi2c, REG_RESULT_SIGNAL_RATE, &tmp16);
+    r->signal_rate_kcps = tmp16 * 8;
+
+    st |= rd_word(hi2c, REG_RESULT_AMBIENT_RATE, &tmp16);
+    r->ambient_rate_kcps = tmp16 * 8;
+
+    st |= rd_word(hi2c, REG_RESULT_SIGMA, &tmp16);
+    r->sigma_mm = tmp16 / 4;
+
+    st |= rd_word(hi2c, REG_RESULT_DISTANCE, &tmp16);
+    r->distance_mm = tmp16;
+
+    r->signal_per_spad_kcps  = r->signal_rate_kcps  / r->number_of_spad;
+    r->ambient_per_spad_kcps = r->ambient_rate_kcps / r->number_of_spad;
+
+    return st;
+}

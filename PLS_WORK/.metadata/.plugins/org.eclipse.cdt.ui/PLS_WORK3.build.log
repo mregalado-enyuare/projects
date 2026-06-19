@@ -1,0 +1,10 @@
+16:03:23 **** Incremental Build of configuration Debug for project PLS_WORK3 ****
+make -j22 all 
+arm-none-eabi-size  PLS_WORK3.elf 
+   text	   data	    bss	    dec	    hex	filename
+   7620	     16	   1568	   9204	   23f4	PLS_WORK3.elf
+Finished building: default.size.stdout
+ 
+
+16:03:23 Build Finished. 0 errors, 0 warnings. (took 348ms)
+

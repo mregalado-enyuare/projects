@@ -1,0 +1,40 @@
+!SESSION 2026-06-11 14:38:00.404 -----------------------------------------------
+eclipse.buildId=Version 2.1.0
+java.version=21.0.9
+java.vendor=Eclipse Adoptium
+BootLoader constants: OS=win32, ARCH=x86_64, WS=win32, NL=en_US
+Command-line arguments:  -os win32 -ws win32 -arch x86_64
+
+!ENTRY com.st.stm32cube.ide.mcu.informationcenter 1 1 2026-06-11 14:38:57.755
+!MESSAGE Log4j2 initialized with config file C:\Users\mregalado_enyuare\STM32CubeIDE\workspace_2.1.0\hole_detector\.metadata\.log4j2.xml
+
+!ENTRY com.st.stm32cube.ide.mcu.ide 1 1 2026-06-11 14:39:01.436
+!MESSAGE Started RMI Server, listening on port 41337
+
+!ENTRY com.st.stm32cube.ide.mpu.remote.serial 1 1 2026-06-11 14:39:02.186
+!MESSAGE Executed PowerShell command powershell.exe -Command "Get-CimInstance -ClassName Win32_SerialPort | Select-Object -ExpandProperty DeviceID":
+COM22
+
+
+!ENTRY com.st.stm32cube.ide.mpu.remote.serial 1 1 2026-06-11 14:39:02.187
+!MESSAGE port: COM22
+!SESSION 2026-06-11 15:05:37.179 -----------------------------------------------
+eclipse.buildId=Version 2.1.0
+java.version=21.0.9
+java.vendor=Eclipse Adoptium
+BootLoader constants: OS=win32, ARCH=x86_64, WS=win32, NL=en_US
+Command-line arguments:  -os win32 -ws win32 -arch x86_64
+
+!ENTRY com.st.stm32cube.ide.mcu.informationcenter 1 1 2026-06-11 15:05:55.973
+!MESSAGE Log4j2 initialized with config file C:\Users\mregalado_enyuare\STM32CubeIDE\workspace_2.1.0\hole_detector\.metadata\.log4j2.xml
+
+!ENTRY com.st.stm32cube.ide.mcu.ide 1 1 2026-06-11 15:05:59.357
+!MESSAGE Started RMI Server, listening on port 41337
+
+!ENTRY com.st.stm32cube.ide.mpu.remote.serial 1 1 2026-06-11 15:06:00.024
+!MESSAGE Executed PowerShell command powershell.exe -Command "Get-CimInstance -ClassName Win32_SerialPort | Select-Object -ExpandProperty DeviceID":
+COM22
+
+
+!ENTRY com.st.stm32cube.ide.mpu.remote.serial 1 1 2026-06-11 15:06:00.024
+!MESSAGE port: COM22

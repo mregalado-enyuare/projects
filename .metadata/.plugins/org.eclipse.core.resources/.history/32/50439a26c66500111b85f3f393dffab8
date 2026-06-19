@@ -1,0 +1,123 @@
+/*
+ * Minimal VL53L4CD distance detection — drop-in replacement for the
+ * relevant sections of main.c.  Everything else (motors, UDP, etc.) is
+ * omitted for clarity.
+ *
+ * Requirements:
+ *   - vl53l4cd.h / vl53l4cd.c (already in your project)
+ *   - hi2c3 configured as in your MX_I2C3_Init()
+ *   - huart3 for debug prints
+ */
+
+#include "main.h"
+#include "vl53l4cd.h"
+#include <stdio.h>
+#include <string.h>
+
+/* ── Global distance (read from anywhere in the project) ───────────── */
+volatile uint16_t g_distance_mm = 0;   /* 0 = no valid reading yet    */
+volatile uint8_t  g_distance_valid = 0; /* 1 = last reading was good   */
+
+/* USER CODE BEGIN 0 */
+extern I2C_HandleTypeDef  hi2c3;
+extern UART_HandleTypeDef huart3;
+
+/* ── How often to print to UART (ms) — 0 to print every reading ────── */
+#define DISTANCE_PRINT_INTERVAL_MS  500U
+
+/* ─────────────────────────────────────────────────────────────────────
+ * Call once in USER CODE BEGIN 2 (after MX_I2C3_Init)
+ * ───────────────────────────────────────────────────────────────────── */
+void Distance_Init(void)
+{
+    VL53L4CD_Error vst = VL53L4CD_Init(&hi2c3);
+    if (vst != VL53L4CD_OK) {
+        char msg[48];
+        int  n = snprintf(msg, sizeof(msg), "VL53L4CD init failed: %d\r\n", vst);
+        HAL_UART_Transmit(&huart3, (uint8_t *)msg, (uint16_t)n, HAL_MAX_DELAY);
+        return;
+    }
+
+    VL53L4CD_StartRanging(&hi2c3);
+    HAL_UART_Transmit(&huart3, (uint8_t *)"VL53L4CD ready\r\n", 16, HAL_MAX_DELAY);
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+ * Call every iteration of the while(1) loop.
+ * Non-blocking — returns immediately if no measurement is ready.
+ * ───────────────────────────────────────────────────────────────────── */
+void Distance_Poll(void)
+{
+    static uint32_t last_print_ms = 0;
+
+    uint8_t ready = 0;
+    VL53L4CD_CheckForDataReady(&hi2c3, &ready);
+    if (!ready) return;                         /* nothing new — come back later */
+
+    VL53L4CD_Result_t res;
+    VL53L4CD_GetResult(&hi2c3, &res);
+    VL53L4CD_ClearInterrupt(&hi2c3);           /* must clear before next reading */
+
+    if (res.range_status == 0) {               /* 0 = valid measurement          */
+        g_distance_mm    = res.distance_mm;
+        g_distance_valid = 1;
+    } else {
+        g_distance_valid = 0;                  /* sensor returned an error status */
+    }
+
+    /* Rate-limited UART print — won't block the loop */
+    uint32_t now = HAL_GetTick();
+    if ((now - last_print_ms) >= DISTANCE_PRINT_INTERVAL_MS) {
+        last_print_ms = now;
+        char msg[48];
+        int  n;
+        if (g_distance_valid)
+            n = snprintf(msg, sizeof(msg), "Dist: %u mm\r\n", g_distance_mm);
+        else
+            n = snprintf(msg, sizeof(msg), "Dist: err (status=%u)\r\n", res.range_status);
+        HAL_UART_Transmit(&huart3, (uint8_t *)msg, (uint16_t)n, HAL_MAX_DELAY);
+    }
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+ * Example: how to use the distance in application logic
+ * ───────────────────────────────────────────────────────────────────── */
+void MyApp_CheckDistance(void)
+{
+    if (!g_distance_valid) return;             /* skip if no fresh reading        */
+
+    if (g_distance_mm < 50) {
+        /* Object closer than 50 mm — do something */
+    } else if (g_distance_mm < 200) {
+        /* Object in 50–200 mm range */
+    } else {
+        /* Object far or absent */
+    }
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+ * main() skeleton — only the relevant parts shown
+ * ───────────────────────────────────────────────────────────────────── */
+/*
+int main(void)
+{
+    HAL_Init();
+    SystemClock_Config();
+
+    MX_GPIO_Init();
+    MX_USART3_UART_Init();
+    MX_I2C3_Init();
+    // ... other peripheral inits ...
+
+    Distance_Init();   // <── add this after MX_I2C3_Init()
+
+    while (1)
+    {
+        Distance_Poll();         // non-blocking distance check
+        MyApp_CheckDistance();   // your application logic
+
+        // g_distance_mm is always the latest valid reading
+        // g_distance_valid tells you whether it's fresh
+    }
+}
+*/

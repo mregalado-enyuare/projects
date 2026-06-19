@@ -1,0 +1,92 @@
+#include "hcsr04.h"
+#include "delay_us.h"
+
+HCSR04_t sensors[NUM_SENSORS];
+
+static void Trigger(HCSR04_t *s)
+{
+    HAL_GPIO_WritePin(s->trigPort, s->trigPin, GPIO_PIN_RESET);
+    delay_us(2);
+    HAL_GPIO_WritePin(s->trigPort, s->trigPin, GPIO_PIN_SET);
+    delay_us(10);
+    HAL_GPIO_WritePin(s->trigPort, s->trigPin, GPIO_PIN_RESET);
+}
+
+void HCSR04_Init(void)
+{
+    sensors[0] = (HCSR04_t){GPIOA, GPIO_PIN_0, GPIOB, GPIO_PIN_0, 0};
+    sensors[1] = (HCSR04_t){GPIOA, GPIO_PIN_1, GPIOB, GPIO_PIN_1, 0};
+    sensors[2] = (HCSR04_t){GPIOA, GPIO_PIN_2, GPIOB, GPIO_PIN_2, 0};
+    sensors[3] = (HCSR04_t){GPIOA, GPIO_PIN_3, GPIOB, GPIO_PIN_10, 0};
+    sensors[4] = (HCSR04_t){GPIOA, GPIO_PIN_4, GPIOB, GPIO_PIN_11, 0};
+    sensors[5] = (HCSR04_t){GPIOA, GPIO_PIN_5, GPIOB, GPIO_PIN_12, 0};
+}
+
+float HCSR04_Read(uint8_t sensor)
+{
+    HCSR04_t *s = &sensors[sensor];
+
+    Trigger(s);
+    delay_us(5);
+
+    uint32_t timeout = HAL_GetTick();
+
+    while(HAL_GPIO_ReadPin(s->echoPort, s->echoPin) == GPIO_PIN_RESET)
+    {
+        if((HAL_GetTick() - timeout) > 30)
+        {
+            s->distance_cm = -1.0f;
+            return -1.0f;
+        }
+    }
+
+    uint32_t start = DWT->CYCCNT;
+    timeout = HAL_GetTick();
+
+    while(HAL_GPIO_ReadPin(s->echoPort, s->echoPin) == GPIO_PIN_SET)
+    {
+        if((HAL_GetTick() - timeout) > 30)
+        {
+            s->distance_cm = -1.0f;
+            return -1.0f;
+        }
+    }
+
+    uint32_t stop = DWT->CYCCNT;
+
+    float pulse_us = (stop - start) / (SystemCoreClock / 1000000.0f);
+    float distance = pulse_us * 0.0343f / 2.0f;
+
+    s->distance_cm = distance;
+    return distance;
+
+
+}
+float HCSR04_ReadAvg(uint8_t sensor, uint8_t samples)
+{
+    float sum = 0;
+    uint8_t valid = 0;
+
+    for(uint8_t i = 0; i < samples; i++)
+    {
+        float r = HCSR04_Read(sensor);
+        if(r > 0)
+        {
+            sum += r;
+            valid++;
+        }
+        HAL_Delay(5);  // reduced from 10ms to 5ms
+    }
+
+    if(valid == 0) return -1.0f;
+    return sum / valid;
+}
+
+void HCSR04_ScanAll(void)
+{
+    for(uint8_t i = 0; i < NUM_SENSORS; i++)
+    {
+        sensors[i].distance_cm = HCSR04_ReadAvg(i, 5); // increased samples to 5
+        HAL_Delay(2);  // reduced from 5ms to 2ms
+    }
+}

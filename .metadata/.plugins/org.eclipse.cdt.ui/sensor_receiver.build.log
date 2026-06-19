@@ -1,0 +1,10 @@
+17:39:46 **** Incremental Build of configuration Debug for project sensor_receiver ****
+make -j22 all 
+arm-none-eabi-size  sensor_receiver.elf 
+   text	   data	    bss	    dec	    hex	filename
+  33140	    136	   2376	  35652	   8b44	sensor_receiver.elf
+Finished building: default.size.stdout
+ 
+
+17:39:46 Build Finished. 0 errors, 0 warnings. (took 568ms)
+

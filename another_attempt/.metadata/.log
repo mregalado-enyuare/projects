@@ -1,0 +1,41 @@
+!SESSION 2026-06-03 09:53:49.854 -----------------------------------------------
+eclipse.buildId=Version 2.1.0
+java.version=21.0.9
+java.vendor=Eclipse Adoptium
+BootLoader constants: OS=win32, ARCH=x86_64, WS=win32, NL=en_US
+Command-line arguments:  -os win32 -ws win32 -arch x86_64
+
+!ENTRY com.st.stm32cube.ide.mcu.informationcenter 1 1 2026-06-03 09:54:36.683
+!MESSAGE Log4j2 initialized with config file C:\Users\mregalado_enyuare\STM32CubeIDE\workspace_2.1.0\another_attempt\.metadata\.log4j2.xml
+
+!ENTRY com.st.stm32cube.ide.mcu.ide 1 1 2026-06-03 09:54:39.634
+!MESSAGE Started RMI Server, listening on port 41337
+
+!ENTRY com.st.stm32cube.ide.mpu.remote.serial 1 1 2026-06-03 09:54:43.930
+!MESSAGE Executed PowerShell command powershell.exe -Command "Get-CimInstance -ClassName Win32_SerialPort | Select-Object -ExpandProperty DeviceID":
+
+
+!ENTRY com.st.stm32cube.ide.mpu.remote.serial 1 1 2026-06-03 09:54:43.931
+!MESSAGE port: 
+!SESSION 2026-06-03 10:58:51.501 -----------------------------------------------
+eclipse.buildId=Version 2.1.0
+java.version=21.0.9
+java.vendor=Eclipse Adoptium
+BootLoader constants: OS=win32, ARCH=x86_64, WS=win32, NL=en_US
+Command-line arguments:  -os win32 -ws win32 -arch x86_64
+
+!ENTRY com.st.stm32cube.ide.mcu.informationcenter 1 1 2026-06-03 10:59:07.497
+!MESSAGE Log4j2 initialized with config file C:\Users\mregalado_enyuare\STM32CubeIDE\workspace_2.1.0\another_attempt\.metadata\.log4j2.xml
+
+!ENTRY com.st.stm32cube.ide.mcu.ide 1 1 2026-06-03 10:59:10.258
+!MESSAGE Started RMI Server, listening on port 41337
+
+!ENTRY com.st.stm32cube.ide.mpu.remote.serial 1 1 2026-06-03 10:59:10.933
+!MESSAGE Executed PowerShell command powershell.exe -Command "Get-CimInstance -ClassName Win32_SerialPort | Select-Object -ExpandProperty DeviceID":
+
+
+!ENTRY com.st.stm32cube.ide.mpu.remote.serial 1 1 2026-06-03 10:59:10.934
+!MESSAGE port: 
+
+!ENTRY org.eclipse.cdt.core 1 0 2026-06-03 12:17:01.174
+!MESSAGE Indexed 'HCSR04_NucleoH723' (29 sources, 132 headers) in 6.17 sec: 17,806 declarations; 108,920 references; 8 unresolved inclusions; 1,629 syntax errors; 2,929 unresolved names (2.3%)

@@ -1,0 +1,43 @@
+2026-06-02 10:40:58,382 [INFO] Activator:176 - 
+
+
+2026-06-02 10:40:58,384 [INFO] Activator:177 - !SESSION log4j initialized
+2026-06-02 10:41:00,770 [INFO] LogOutputStream:77 - [STDOUT_REDIRECT] 
+2026-06-02 10:58:48,765 [ERROR] LogOutputStream:75 - [STDERR_REDIRECT] SLF4J: Failed to load class "org.slf4j.impl.StaticLoggerBinder".
+2026-06-02 10:58:48,766 [ERROR] LogOutputStream:75 - [STDERR_REDIRECT] SLF4J: Defaulting to no-operation (NOP) logger implementation
+2026-06-02 10:58:48,767 [ERROR] LogOutputStream:75 - [STDERR_REDIRECT] SLF4J: See http://www.slf4j.org/codes.html#StaticLoggerBinder for further details.
+2026-06-02 10:58:49,456 [ERROR] LogOutputStream:75 - [STDERR_REDIRECT] Jun 02, 2026 10:58:49 AM org.apache.jasper.servlet.TldScanner scanJars
+2026-06-02 10:58:49,458 [ERROR] LogOutputStream:75 - [STDERR_REDIRECT] INFO: At least one JAR was scanned for TLDs yet contained no TLDs. Enable debug logging for this logger for a complete list of JARs that were scanned but no TLDs were found in them. Skipping unneeded JARs during scanning can improve startup time and JSP compilation time.
+2026-06-02 10:58:49,459 [ERROR] LogOutputStream:75 - [STDERR_REDIRECT] 
+2026-06-02 10:58:49,863 [ERROR] LogOutputStream:75 - [STDERR_REDIRECT] Jun 02, 2026 10:58:49 AM org.apache.jasper.servlet.TldScanner scanJars
+2026-06-02 10:58:49,866 [ERROR] LogOutputStream:75 - [STDERR_REDIRECT] INFO: At least one JAR was scanned for TLDs yet contained no TLDs. Enable debug logging for this logger for a complete list of JARs that were scanned but no TLDs were found in them. Skipping unneeded JARs during scanning can improve startup time and JSP compilation time.
+2026-06-02 10:58:49,866 [ERROR] LogOutputStream:75 - [STDERR_REDIRECT] 
+2026-06-02 10:58:56,935 [ERROR] LogOutputStream:75 - [STDERR_REDIRECT] Jun 02, 2026 10:58:56 AM org.apache.lucene.internal.vectorization.VectorizationProvider lookup
+2026-06-02 10:58:56,937 [ERROR] LogOutputStream:75 - [STDERR_REDIRECT] WARNING: Java vector incubator module is not readable. For optimal vector performance, pass '--add-modules jdk.incubator.vector' to enable Vector API.
+2026-06-02 10:58:56,937 [ERROR] LogOutputStream:75 - [STDERR_REDIRECT] 
+2026-06-02 13:10:17,664 [ERROR] LogOutputStream:75 - [STDERR_REDIRECT] 
+2026-06-02 13:14:58,998 [INFO] Activator:176 - 
+
+
+2026-06-02 13:14:59,000 [INFO] Activator:177 - !SESSION log4j initialized
+2026-06-02 13:15:01,944 [INFO] LogOutputStream:77 - [STDOUT_REDIRECT] 
+2026-06-02 13:29:53,538 [INFO] Activator:176 - 
+
+
+2026-06-02 13:29:53,542 [INFO] Activator:177 - !SESSION log4j initialized
+2026-06-02 13:29:56,459 [INFO] LogOutputStream:77 - [STDOUT_REDIRECT] 
+2026-06-02 13:47:53,122 [INFO] Activator:176 - 
+
+
+2026-06-02 13:47:53,125 [INFO] Activator:177 - !SESSION log4j initialized
+2026-06-02 13:47:57,276 [INFO] LogOutputStream:77 - [STDOUT_REDIRECT] 
+2026-06-02 13:55:32,930 [INFO] Activator:176 - 
+
+
+2026-06-02 13:55:32,932 [INFO] Activator:177 - !SESSION log4j initialized
+2026-06-02 13:55:35,211 [INFO] LogOutputStream:77 - [STDOUT_REDIRECT] 
+2026-06-02 16:26:27,021 [INFO] Activator:176 - 
+
+
+2026-06-02 16:26:27,024 [INFO] Activator:177 - !SESSION log4j initialized
+2026-06-02 16:26:30,891 [INFO] LogOutputStream:77 - [STDOUT_REDIRECT] 

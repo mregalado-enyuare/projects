@@ -1,0 +1,7 @@
+2026-06-04 10:55:46,406 [ERROR] ConfigurationRetriever:142 - IOException on connection: Connect timed out
+2026-06-04 10:55:49,128 [ERROR] ConfigurationRetriever:142 - IOException on connection: Connect timed out
+2026-06-04 11:18:29,281 [INFO] Activator:176 - 
+
+
+2026-06-04 11:18:29,284 [INFO] Activator:177 - !SESSION log4j initialized
+2026-06-04 11:18:34,959 [INFO] LogOutputStream:77 - [STDOUT_REDIRECT] 

@@ -1,0 +1,1643 @@
+/* USER CODE BEGIN Header */
+/* USER CODE END Header */
+/* Includes ------------------------------------------------------------------*/
+#include "main.h"
+#include "lwip.h"
+
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
+	#include "vl53l4cd.h"
+	#include "homing_x.h"
+	#include <stdbool.h>
+	#include <stdio.h>
+	#include <stdlib.h>
+	#include <string.h>
+	#include <ctype.h>
+	#include "commands.h"
+	#include "motors.h"
+	#include "udp_server.h"
+	#include "stm32h7xx_hal_eth.h"
+	#include "netif.h"
+	#include "dm556_parabolic_motion.h"
+	#include "lid_motors.h"
+	#include "async_bus.h"
+	#include "udp_server.h"
+	#include "keg_dispense.h"
+	#include "ice_dispenser.h"
+/* USER CODE END Includes */
+
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN PTD */
+/* USER CODE END PTD */
+
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+/* USER CODE END PD */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+/* USER CODE END PM */
+
+/* Private variables ---------------------------------------------------------*/
+
+I2C_HandleTypeDef hi2c3;
+
+IWDG_HandleTypeDef hiwdg1;
+
+TIM_HandleTypeDef htim1;
+TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim3;
+TIM_HandleTypeDef htim4;
+TIM_HandleTypeDef htim5;
+TIM_HandleTypeDef htim8;
+TIM_HandleTypeDef htim12;
+TIM_HandleTypeDef htim15;
+TIM_HandleTypeDef htim23;
+TIM_HandleTypeDef htim24;
+
+UART_HandleTypeDef huart3;
+
+/* USER CODE BEGIN PV */
+
+	#define NUM_MOTORS  2
+
+	MotorControl_t motors[NUM_MOTORS] = {
+	// Gantry Motor 0
+		{ .dirPort = GANTRY_X_DIR_GPIO_Port, .dirPin = GANTRY_X_DIR_Pin, .htim = &htim23, .timChannel = TIM_CHANNEL_1,
+
+		.stepCount = 0, .state = MOTOR_STATE_IDLE, .baseARR = 150, .decelARR = 1200, .decelSteps = 1000,
+
+		.stepProfile = NULL, .profileSize = 0, .profileIndex = 0, },
+
+		// Gantry Motor 1
+		{ .dirPort = GANTRY_Y_DIR_GPIO_Port, .dirPin = GANTRY_Y_DIR_Pin, .htim = &htim5, .timChannel = TIM_CHANNEL_1,
+
+		.stepCount = 0, .state = MOTOR_STATE_IDLE, .baseARR = 150, .decelARR = 1200, .decelSteps = 1000,
+
+		.stepProfile = NULL, .profileSize = 0, .profileIndex = 0, }, };
+
+	// Gantry Position
+	int32_t gantryXPos = 0;
+	int32_t gantryYPos = 0;
+
+	// variables for getting uart input
+	uint8_t temp;
+	uint8_t terminalInput[100];
+	uint8_t indx = 0;
+
+
+	// state tracker for if UART command has been received
+	bool commandReceived = false;
+
+	volatile uint32_t counter = 0;      // updated in the TIM input capture callback
+	volatile uint32_t target_position = 0; // target encoder count we want to reach
+	volatile int32_t extended_position = 0;     // 32-bit, won't overflow quickly
+	volatile uint16_t last_encoder_reading = 0; // previous 16-bit reading
+
+	static char s_stall_msg[96] = "";
+	static int  s_stall_rack  = 0;
+	static int  s_stall_motor = 0;
+	const char *syringe_last_stall_msg(void) { return s_stall_msg; }
+	void syringe_clear_stall_msg(void) { s_stall_msg[0] = '\0'; }
+	void syringe_set_stall_context(int rack_num, int motor_id) { s_stall_rack = rack_num; s_stall_motor = motor_id; }
+
+	/* Ethernet */
+	/*––– PHY registers & bitmasks –––*/
+	#define LAN8742A_PHY_ADDR     0U
+	#define PHY_REG_BSR           1U         /* Basic Status Register */
+	#define  PHY_BSR_LINK_UP      (1U<<2)
+	#define PHY_REG_PHYSTS        31U        /* PHY Status Register */
+	#define  PHY_PHYSTS_SPEED_100 (1U<<2)
+	#define  PHY_PHYSTS_DUPLEX_F  (1U<<3)
+
+	#define GRATUITOUS_ARP_INTERVAL_MS 15000U /* 15 seconds */
+
+	volatile uint16_t g_distance_mm = 0;   /* live-watch this in debugger */
+/* USER CODE END PV */
+
+/* Private function prototypes -----------------------------------------------*/
+void SystemClock_Config(void);
+static void MX_GPIO_Init(void);
+static void MX_USART3_UART_Init(void);
+static void MX_USB_OTG_HS_USB_Init(void);
+static void MX_TIM2_Init(void);
+static void MX_TIM3_Init(void);
+static void MX_TIM1_Init(void);
+static void MX_TIM23_Init(void);
+static void MX_TIM15_Init(void);
+static void MX_TIM24_Init(void);
+static void MX_IWDG1_Init(void);
+static void MX_TIM5_Init(void);
+static void MX_TIM4_Init(void);
+static void MX_TIM12_Init(void);
+static void MX_TIM8_Init(void);
+static void MX_I2C3_Init(void);
+/* USER CODE BEGIN PFP */
+	extern ETH_HandleTypeDef heth;
+	extern UART_HandleTypeDef huart3;
+
+	static void send_gratuitous_arp(void *arg);
+/* USER CODE END PFP */
+
+/* Private user code ---------------------------------------------------------*/
+/* USER CODE BEGIN 0 */
+	/* Motor Control */
+	//void EnableMotor(MotorControl_t *m);
+	//void DisableMotor(MotorControl_t *m);
+	//void Motor_SetDirection(MotorControl_t *m, bool up);
+	//void Motor_MoveSteps(MotorControl_t *m, bool up, uint32_t steps);
+	/* Interrupts */
+	void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart);
+	void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim);
+
+	/* DC Motor + Encoder */
+	void UpdateEncoderPosition(void);
+	bool moveForward(uint32_t move_value, uint32_t speed);
+	bool moveBackward(uint32_t move_value, uint32_t speed);
+	const char *syringe_last_stall_msg(void);
+	void syringe_clear_stall_msg(void);
+	void syringe_set_stall_context(int rack_num, int motor_id);
+
+	// One-time init to bind ports/pins + timers for the dc motors
+/* USER CODE END 0 */
+
+/**
+  * @brief  The application entry point.
+  * @retval int
+  */
+int main(void)
+{
+
+  /* USER CODE BEGIN 1 */
+	  __disable_irq();
+	  __DSB();
+	  __ISB();
+
+	  /* Invalidate by set/way: no writeback, so no bus access */
+	  SCB_InvalidateDCache();
+
+	  /* Manually disable D-cache without trying to clean it */
+	  SCB->CCR &= ~SCB_CCR_DC_Msk;
+	  __DSB();
+	  __ISB();
+
+	  __enable_irq();
+
+	  HAL_NVIC_SetPriority(SysTick_IRQn, 0, 0);
+
+  /* USER CODE END 1 */
+
+  /* MCU Configuration--------------------------------------------------------*/
+
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+  HAL_Init();
+
+  /* USER CODE BEGIN Init */
+  /* USER CODE END Init */
+
+  /* Configure the system clock */
+  SystemClock_Config();
+
+  /* USER CODE BEGIN SysInit */
+  /* USER CODE END SysInit */
+
+  /* Initialize all configured peripherals */
+  MX_GPIO_Init();
+  MX_USART3_UART_Init();
+  MX_USB_OTG_HS_USB_Init();
+  MX_TIM2_Init();
+  MX_TIM3_Init();
+  MX_TIM1_Init();
+  MX_LWIP_Init();
+  MX_TIM23_Init();
+  MX_TIM15_Init();
+  MX_TIM24_Init();
+  MX_IWDG1_Init();
+  MX_TIM5_Init();
+  MX_TIM4_Init();
+  MX_TIM12_Init();
+  MX_TIM8_Init();
+  MX_I2C3_Init();
+  /* USER CODE BEGIN 2 */
+
+	  lid_motors_init();
+	  ice_dispenser_init();
+
+	  // Read DIP Switches (pull-ups: ON=closed=GND->0, OFF=open->1)
+	  uint8_t dip1 = (HAL_GPIO_ReadPin(DIP_1_GPIO_Port, DIP_1_Pin) == GPIO_PIN_RESET) ? 0 : 1;
+	  uint8_t dip2 = (HAL_GPIO_ReadPin(DIP_2_GPIO_Port, DIP_2_Pin) == GPIO_PIN_RESET) ? 0 : 1;
+	  uint8_t dip3 = (HAL_GPIO_ReadPin(DIP_3_GPIO_Port, DIP_3_Pin) == GPIO_PIN_RESET) ? 0 : 1;
+	  uint8_t dip4 = (HAL_GPIO_ReadPin(DIP_4_GPIO_Port, DIP_4_Pin) == GPIO_PIN_RESET) ? 0 : 1;
+
+	  // print DIP switch states for debugging
+	  char msg[64];
+	  int n = snprintf(msg, sizeof(msg),
+					   "DIP1:%u DIP2:%u DIP3:%u DIP4:%u\r\n",
+					   dip1, dip2, dip3, dip4);
+	  if (n > 0) HAL_UART_Transmit(&huart3, (uint8_t*)msg, (uint16_t)n, HAL_MAX_DELAY);
+
+	  // DIP1/DIP2 select 0..3 (101..104)
+	  uint8_t dip_value = (dip1 << 1) | dip2;     // 0..3
+	  uint8_t bank_on   = (dip3 == 0) ? 1 : 0;    // DIP3 ON => 1
+	  uint8_t board_id  = (uint8_t)(dip_value + 1 + (bank_on * 5));  // 1..4 or 6..9
+
+	  // Ethernet Setup
+	  udp_server_init(board_id);
+
+	  if (HAL_ETH_Start(&heth) != HAL_OK) {
+		Error_Handler();
+	  }
+
+	  /* give the PHY a moment to negotiate */
+	  HAL_Delay(1000);
+
+	  // setup periodic gratuitous ARP
+	  sys_timeout(GRATUITOUS_ARP_INTERVAL_MS, send_gratuitous_arp, netif_default);
+
+	  //send one ARP
+	  etharp_gratuitous(netif_default);
+
+	  /* print link status once on startup */
+	  //  PrintEthLinkStatus();
+	  char ipstr[32];
+	  ip4addr_ntoa_r(&netif_default->ip_addr, ipstr, sizeof(ipstr));
+	  HAL_UART_Transmit(&huart3, (uint8_t*) "My IP: ", 7, HAL_MAX_DELAY);
+	  HAL_UART_Transmit(&huart3, (uint8_t*) ipstr, strlen(ipstr), HAL_MAX_DELAY);
+	  HAL_UART_Transmit(&huart3, (uint8_t*) "\r\n", 2, HAL_MAX_DELAY);
+
+	  // directly calling uart config
+	  __enable_irq();
+	  HAL_NVIC_SetPriority(USART3_IRQn, 1, 0);
+	  HAL_NVIC_EnableIRQ(USART3_IRQn);
+
+	  HAL_UART_Receive_IT(&huart3, &temp, 1);
+
+	  HAL_TIM_Encoder_Start(&htim1, TIM_CHANNEL_ALL);
+
+	  /* Initialize extended position right after starting the encoder */
+	  last_encoder_reading = 0;
+	  extended_position = 0;
+
+	  counter = __HAL_TIM_GET_COUNTER(&htim1); // initialize encoder counter
+
+	  // Enable 24V motors on boot
+	  HAL_GPIO_WritePin(ENABLE_24V_GPIO_Port, ENABLE_24V_Pin, GPIO_PIN_SET);
+
+	  /* I2C3 diagnostics (PA8=SCL, PC9=SDA on CN12) */
+	  {
+		  char smsg[64];
+		  int sn;
+
+		  /* 1. Print I2C3 state and error code */
+		  sn = snprintf(smsg, sizeof(smsg), "I2C3 state=0x%02X err=0x%08lX\r\n",
+				  (unsigned)hi2c3.State, hi2c3.ErrorCode);
+		  HAL_UART_Transmit(&huart3, (uint8_t*)smsg, (uint16_t)sn, HAL_MAX_DELAY);
+
+		  /* 2. Try VL53L4CD address 0x29 directly with long timeout */
+		  HAL_StatusTypeDef hst = HAL_I2C_IsDeviceReady(&hi2c3, 0x29 << 1, 3, 100);
+		  sn = snprintf(smsg, sizeof(smsg), "0x29 probe: %s (state=0x%02X err=0x%08lX)\r\n",
+				  hst == HAL_OK ? "ACK" :
+				  hst == HAL_BUSY ? "BUSY" :
+				  hst == HAL_TIMEOUT ? "TIMEOUT" : "ERROR",
+				  (unsigned)hi2c3.State, hi2c3.ErrorCode);
+		  HAL_UART_Transmit(&huart3, (uint8_t*)smsg, (uint16_t)sn, HAL_MAX_DELAY);
+
+		  /* 3. Full scan — print every non-timeout response */
+		  HAL_UART_Transmit(&huart3, (uint8_t*)"Scanning I2C3...\r\n", 18, HAL_MAX_DELAY);
+		  int found = 0;
+		  for (uint8_t addr = 1; addr < 128; addr++) {
+			  HAL_StatusTypeDef r = HAL_I2C_IsDeviceReady(&hi2c3, (uint16_t)(addr << 1), 2, 50);
+			  if (r == HAL_OK) {
+				  sn = snprintf(smsg, sizeof(smsg), "  ACK  at 0x%02X\r\n", addr);
+				  HAL_UART_Transmit(&huart3, (uint8_t*)smsg, (uint16_t)sn, HAL_MAX_DELAY);
+				  found = 1;
+			  } else if (r == HAL_ERROR) {
+				  /* Device present but NACKing — print it */
+				  sn = snprintf(smsg, sizeof(smsg), "  NACK at 0x%02X (err=0x%08lX)\r\n",
+						  addr, hi2c3.ErrorCode);
+				  HAL_UART_Transmit(&huart3, (uint8_t*)smsg, (uint16_t)sn, HAL_MAX_DELAY);
+			  }
+			  /* HAL_TIMEOUT = nothing on bus, skip */
+		  }
+		  if (!found)
+			  HAL_UART_Transmit(&huart3, (uint8_t*)"  No ACK found\r\n", 16, HAL_MAX_DELAY);
+	  }
+
+	  /* VL53L4CD distance sensor init */
+	  {
+		  char vmsg[64];
+		  VL53L4CD_Error vst = VL53L4CD_Init(&hi2c3);
+		  if (vst != VL53L4CD_OK) {
+			  int vn = snprintf(vmsg, sizeof(vmsg), "VL53L4CD init failed: %d\r\n", vst);
+			  HAL_UART_Transmit(&huart3, (uint8_t*)vmsg, (uint16_t)vn, HAL_MAX_DELAY);
+		  } else {
+			  VL53L4CD_StartRanging(&hi2c3);
+			  HAL_UART_Transmit(&huart3, (uint8_t*)"VL53L4CD ready\r\n", 16, HAL_MAX_DELAY);
+		  }
+	  }
+
+  /* USER CODE END 2 */
+
+  /* Initialize leds */
+  BSP_LED_Init(LED_GREEN);
+
+  /* Infinite loop */
+  /* USER CODE BEGIN WHILE */
+  while (1)
+  {
+	  MX_LWIP_Process(); // required for UDP receive + lwIP timers in bare-metal
+	  udp_async_pump(); // drains async_bus -> sends DONE/ERR to last peer
+	  GotoSeq_Pump(); // progresses multi-segment gantry moves
+	  HomingX_Pump(); // progresses X homing / independent / until limit
+	  CalibrateDual_Pump();
+	  LidCal_Pump(); // advances lid motor calibration state machine
+	  udp_log_process(); // optional but helps not block log queue
+	  HAL_IWDG_Refresh(&hiwdg1); // if enabled
+    /* USER CODE END WHILE */
+
+    /* USER CODE BEGIN 3 */
+	  {
+		  uint8_t ready = 0;
+		  VL53L4CD_CheckForDataReady(&hi2c3, &ready);
+		  if (ready) {
+			  VL53L4CD_Result_t vres;
+			  VL53L4CD_GetResult(&hi2c3, &vres);
+			  VL53L4CD_ClearInterrupt(&hi2c3);
+			  if (vres.range_status == 0) {
+				  g_distance_mm = vres.distance_mm;
+				  char dmsg[48];
+				  int dn = snprintf(dmsg, sizeof(dmsg), "Dist: %u mm\r\n", vres.distance_mm);
+				  HAL_UART_Transmit(&huart3, (uint8_t*)dmsg, (uint16_t)dn, HAL_MAX_DELAY);
+			  }
+		  }
+	  }
+  }
+  /* USER CODE END 3 */
+}
+
+/**
+  * @brief System Clock Configuration
+  * @retval None
+  */
+void SystemClock_Config(void)
+{
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+  /** Supply configuration update enable
+  */
+  HAL_PWREx_ConfigSupply(PWR_LDO_SUPPLY);
+
+  /** Configure the main internal regulator output voltage
+  */
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE0);
+
+  while(!__HAL_PWR_GET_FLAG(PWR_FLAG_VOSRDY)) {}
+
+  /** Initializes the RCC Oscillators according to the specified parameters
+  * in the RCC_OscInitTypeDef structure.
+  */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI48|RCC_OSCILLATORTYPE_LSI
+                              |RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
+  RCC_OscInitStruct.HSI48State = RCC_HSI48_ON;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLM = 4;
+  RCC_OscInitStruct.PLL.PLLN = 275;
+  RCC_OscInitStruct.PLL.PLLP = 1;
+  RCC_OscInitStruct.PLL.PLLQ = 4;
+  RCC_OscInitStruct.PLL.PLLR = 2;
+  RCC_OscInitStruct.PLL.PLLRGE = RCC_PLL1VCIRANGE_1;
+  RCC_OscInitStruct.PLL.PLLVCOSEL = RCC_PLL1VCOWIDE;
+  RCC_OscInitStruct.PLL.PLLFRACN = 0;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2
+                              |RCC_CLOCKTYPE_D3PCLK1|RCC_CLOCKTYPE_D1PCLK1;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+  RCC_ClkInitStruct.SYSCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_HCLK_DIV2;
+  RCC_ClkInitStruct.APB3CLKDivider = RCC_APB3_DIV2;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_APB1_DIV2;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_APB2_DIV2;
+  RCC_ClkInitStruct.APB4CLKDivider = RCC_APB4_DIV2;
+
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
+  * @brief I2C3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C3_Init(void)
+{
+
+  /* USER CODE BEGIN I2C3_Init 0 */
+
+  /* USER CODE END I2C3_Init 0 */
+
+  /* USER CODE BEGIN I2C3_Init 1 */
+
+  /* USER CODE END I2C3_Init 1 */
+  hi2c3.Instance = I2C3;
+  hi2c3.Init.Timing = 0x307075B1;
+  hi2c3.Init.OwnAddress1 = 0;
+  hi2c3.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c3.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c3.Init.OwnAddress2 = 0;
+  hi2c3.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+  hi2c3.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c3.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Analogue filter
+  */
+  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c3, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Digital filter
+  */
+  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c3, 0) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C3_Init 2 */
+
+  /* USER CODE END I2C3_Init 2 */
+
+}
+
+/**
+  * @brief IWDG1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_IWDG1_Init(void)
+{
+
+  /* USER CODE BEGIN IWDG1_Init 0 */
+
+  /* USER CODE END IWDG1_Init 0 */
+
+  /* USER CODE BEGIN IWDG1_Init 1 */
+
+  /* USER CODE END IWDG1_Init 1 */
+  hiwdg1.Instance = IWDG1;
+  hiwdg1.Init.Prescaler = IWDG_PRESCALER_256;
+  hiwdg1.Init.Window = 4095;
+  hiwdg1.Init.Reload = 4095;
+  if (HAL_IWDG_Init(&hiwdg1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN IWDG1_Init 2 */
+
+  /* USER CODE END IWDG1_Init 2 */
+
+}
+
+/**
+  * @brief TIM1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM1_Init(void)
+{
+
+  /* USER CODE BEGIN TIM1_Init 0 */
+
+  /* USER CODE END TIM1_Init 0 */
+
+  TIM_Encoder_InitTypeDef sConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM1_Init 1 */
+
+  /* USER CODE END TIM1_Init 1 */
+  htim1.Instance = TIM1;
+  htim1.Init.Prescaler = 0;
+  htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim1.Init.Period = 65535;
+  htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim1.Init.RepetitionCounter = 0;
+  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
+  sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC1Filter = 15;
+  sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC2Filter = 15;
+  if (HAL_TIM_Encoder_Init(&htim1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterOutputTrigger2 = TIM_TRGO2_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM1_Init 2 */
+
+  /* USER CODE END TIM1_Init 2 */
+
+}
+
+/**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 0;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 4294967295;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
+  HAL_TIM_MspPostInit(&htim2);
+
+}
+
+/**
+  * @brief TIM3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM3_Init(void)
+{
+
+  /* USER CODE BEGIN TIM3_Init 0 */
+
+  /* USER CODE END TIM3_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  /* USER CODE BEGIN TIM3_Init 1 */
+
+  /* USER CODE END TIM3_Init 1 */
+  htim3.Instance = TIM3;
+  htim3.Init.Prescaler = 0;
+  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim3.Init.Period = 65535;
+  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_PWM_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM3_Init 2 */
+
+  /* USER CODE END TIM3_Init 2 */
+  HAL_TIM_MspPostInit(&htim3);
+
+}
+
+/**
+  * @brief TIM4 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM4_Init(void)
+{
+
+  /* USER CODE BEGIN TIM4_Init 0 */
+
+  /* USER CODE END TIM4_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  /* USER CODE BEGIN TIM4_Init 1 */
+
+  /* USER CODE END TIM4_Init 1 */
+  htim4.Instance = TIM4;
+  htim4.Init.Prescaler = 0;
+  htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim4.Init.Period = 65535;
+  htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_PWM_Init(&htim4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim4, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim4, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM4_Init 2 */
+
+  /* USER CODE END TIM4_Init 2 */
+  HAL_TIM_MspPostInit(&htim4);
+
+}
+
+/**
+  * @brief TIM5 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM5_Init(void)
+{
+
+  /* USER CODE BEGIN TIM5_Init 0 */
+
+  /* USER CODE END TIM5_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  /* USER CODE BEGIN TIM5_Init 1 */
+
+  /* USER CODE END TIM5_Init 1 */
+  htim5.Instance = TIM5;
+  htim5.Init.Prescaler = 0;
+  htim5.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim5.Init.Period = 4294967295;
+  htim5.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim5.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_PWM_Init(&htim5) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim5, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim5, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM5_Init 2 */
+
+  /* USER CODE END TIM5_Init 2 */
+  HAL_TIM_MspPostInit(&htim5);
+
+}
+
+/**
+  * @brief TIM8 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM8_Init(void)
+{
+
+  /* USER CODE BEGIN TIM8_Init 0 */
+
+  /* USER CODE END TIM8_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+  TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
+
+  /* USER CODE BEGIN TIM8_Init 1 */
+
+  /* USER CODE END TIM8_Init 1 */
+  htim8.Instance = TIM8;
+  htim8.Init.Prescaler = 0;
+  htim8.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim8.Init.Period = 65535;
+  htim8.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim8.Init.RepetitionCounter = 0;
+  htim8.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_PWM_Init(&htim8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterOutputTrigger2 = TIM_TRGO2_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim8, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
+  sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
+  if (HAL_TIM_PWM_ConfigChannel(&htim8, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_ConfigChannel(&htim8, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
+  sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
+  sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
+  sBreakDeadTimeConfig.DeadTime = 0;
+  sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
+  sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
+  sBreakDeadTimeConfig.BreakFilter = 0;
+  sBreakDeadTimeConfig.Break2State = TIM_BREAK2_DISABLE;
+  sBreakDeadTimeConfig.Break2Polarity = TIM_BREAK2POLARITY_HIGH;
+  sBreakDeadTimeConfig.Break2Filter = 0;
+  sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
+  if (HAL_TIMEx_ConfigBreakDeadTime(&htim8, &sBreakDeadTimeConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM8_Init 2 */
+
+  /* USER CODE END TIM8_Init 2 */
+  HAL_TIM_MspPostInit(&htim8);
+
+}
+
+/**
+  * @brief TIM12 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM12_Init(void)
+{
+
+  /* USER CODE BEGIN TIM12_Init 0 */
+
+  /* USER CODE END TIM12_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_IC_InitTypeDef sConfigIC = {0};
+
+  /* USER CODE BEGIN TIM12_Init 1 */
+
+  /* USER CODE END TIM12_Init 1 */
+  htim12.Instance = TIM12;
+  htim12.Init.Prescaler = 0;
+  htim12.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim12.Init.Period = 65535;
+  htim12.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim12.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_IC_Init(&htim12) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim12, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
+  sConfigIC.ICSelection = TIM_ICSELECTION_DIRECTTI;
+  sConfigIC.ICPrescaler = TIM_ICPSC_DIV1;
+  sConfigIC.ICFilter = 0;
+  if (HAL_TIM_IC_ConfigChannel(&htim12, &sConfigIC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_IC_ConfigChannel(&htim12, &sConfigIC, TIM_CHANNEL_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM12_Init 2 */
+
+  /* USER CODE END TIM12_Init 2 */
+
+}
+
+/**
+  * @brief TIM15 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM15_Init(void)
+{
+
+  /* USER CODE BEGIN TIM15_Init 0 */
+
+  /* USER CODE END TIM15_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+  TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
+
+  /* USER CODE BEGIN TIM15_Init 1 */
+
+  /* USER CODE END TIM15_Init 1 */
+  htim15.Instance = TIM15;
+  htim15.Init.Prescaler = 0;
+  htim15.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim15.Init.Period = 27500;
+  htim15.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim15.Init.RepetitionCounter = 0;
+  htim15.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_PWM_Init(&htim15) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim15, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
+  sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
+  if (HAL_TIM_PWM_ConfigChannel(&htim15, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
+  sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
+  sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
+  sBreakDeadTimeConfig.DeadTime = 0;
+  sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
+  sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
+  sBreakDeadTimeConfig.BreakFilter = 0;
+  sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
+  if (HAL_TIMEx_ConfigBreakDeadTime(&htim15, &sBreakDeadTimeConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM15_Init 2 */
+
+  /* USER CODE END TIM15_Init 2 */
+  HAL_TIM_MspPostInit(&htim15);
+
+}
+
+/**
+  * @brief TIM23 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM23_Init(void)
+{
+
+  /* USER CODE BEGIN TIM23_Init 0 */
+
+  /* USER CODE END TIM23_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  /* USER CODE BEGIN TIM23_Init 1 */
+
+  /* USER CODE END TIM23_Init 1 */
+  htim23.Instance = TIM23;
+  htim23.Init.Prescaler = 0;
+  htim23.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim23.Init.Period = 4294967295;
+  htim23.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim23.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_PWM_Init(&htim23) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim23, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim23, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_ConfigChannel(&htim23, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM23_Init 2 */
+
+  /* USER CODE END TIM23_Init 2 */
+  HAL_TIM_MspPostInit(&htim23);
+
+}
+
+/**
+  * @brief TIM24 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM24_Init(void)
+{
+
+  /* USER CODE BEGIN TIM24_Init 0 */
+
+  /* USER CODE END TIM24_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  /* USER CODE BEGIN TIM24_Init 1 */
+
+  /* USER CODE END TIM24_Init 1 */
+  htim24.Instance = TIM24;
+  htim24.Init.Prescaler = 0;
+  htim24.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim24.Init.Period = 65535;
+  htim24.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim24.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_PWM_Init(&htim24) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim24, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim24, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_ConfigChannel(&htim24, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM24_Init 2 */
+
+  /* USER CODE END TIM24_Init 2 */
+  HAL_TIM_MspPostInit(&htim24);
+
+}
+
+/**
+  * @brief USART3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART3_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART3_Init 0 */
+  /* USER CODE END USART3_Init 0 */
+
+  /* USER CODE BEGIN USART3_Init 1 */
+  /* USER CODE END USART3_Init 1 */
+  huart3.Instance = USART3;
+  huart3.Init.BaudRate = 115200;
+  huart3.Init.WordLength = UART_WORDLENGTH_8B;
+  huart3.Init.StopBits = UART_STOPBITS_1;
+  huart3.Init.Parity = UART_PARITY_NONE;
+  huart3.Init.Mode = UART_MODE_TX_RX;
+  huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart3.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart3.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart3.Init.ClockPrescaler = UART_PRESCALER_DIV1;
+  huart3.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  if (HAL_UART_Init(&huart3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetTxFifoThreshold(&huart3, UART_TXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetRxFifoThreshold(&huart3, UART_RXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_DisableFifoMode(&huart3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART3_Init 2 */
+  /* USER CODE END USART3_Init 2 */
+
+}
+
+/**
+  * @brief USB_OTG_HS Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USB_OTG_HS_USB_Init(void)
+{
+
+  /* USER CODE BEGIN USB_OTG_HS_Init 0 */
+  /* USER CODE END USB_OTG_HS_Init 0 */
+
+  /* USER CODE BEGIN USB_OTG_HS_Init 1 */
+  /* USER CODE END USB_OTG_HS_Init 1 */
+  /* USER CODE BEGIN USB_OTG_HS_Init 2 */
+  /* USER CODE END USB_OTG_HS_Init 2 */
+
+}
+
+/**
+  * @brief GPIO Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_GPIO_Init(void)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  /* USER CODE BEGIN MX_GPIO_Init_1 */
+  /* USER CODE END MX_GPIO_Init_1 */
+
+  /* GPIO Ports Clock Enable */
+  __HAL_RCC_GPIOE_CLK_ENABLE();
+  __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_GPIOF_CLK_ENABLE();
+  __HAL_RCC_GPIOH_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+  __HAL_RCC_GPIOG_CLK_ENABLE();
+  __HAL_RCC_GPIOD_CLK_ENABLE();
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOE, LID_TRANSLATE_1_DIR_Pin|LID_TRANSLATE_2_DIR_Pin|LID_ROTATE_1_DIR_Pin|LID_ROTATE_2_DIR_Pin
+                          |KEG5_FET_Pin|CUP_2_IN1_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(PEBBLE_ICE_TRIG_GPIO_Port, PEBBLE_ICE_TRIG_Pin, GPIO_PIN_SET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOF, LID_SEAL_DIR_Pin|LID_SINGULATOR_1_RING_1_FET_Pin|GANTRY_X2_DIR_Pin|LID_SINGULATOR_1_RING_2_FET_Pin
+                          |LID_SINGULATOR_2_RING_1_FET_Pin|CUP_1_IN1_Pin|CUP_1_IN2_Pin|KEG2_FET_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(ENABLE_24V_GPIO_Port, ENABLE_24V_Pin, GPIO_PIN_SET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(LID_SINGULATOR_2_RING_2_FET_GPIO_Port, LID_SINGULATOR_2_RING_2_FET_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(CUBE_ICE_TRIG_GPIO_Port, CUBE_ICE_TRIG_Pin, GPIO_PIN_SET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOG, KEG3_FET_Pin|KEG4_FET_Pin|SYRINGE_SEL0_Pin|SYRINGE_SEL1_Pin
+                          |SYRINGE_SEL2_Pin|SYRINGE_SEL3_Pin|KEG1_FET_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOB, CUP_2_IN2_Pin|KEG6_FET_Pin|CUP_1_TRIG_Pin|SYRINGE_IN1_Pin
+                          |SYRINGE_IN2_Pin|CUP_2_TRIG_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOD, USB_FS_PWR_EN_Pin|GANTRY_Y_DIR_Pin|LID_SUCTION_FET_Pin|CUP_1_AIR_1_FET_Pin
+                          |CUP_1_AIR_2_FET_Pin|CUP_2_AIR_1_FET_Pin|CUP_2_AIR_2_FET_Pin|GANTRY_X_DIR_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOD, APDS9960_2_SCL_Pin|APDS9960_2_SDA_Pin, GPIO_PIN_SET);
+
+  /*Configure GPIO pins : LID_TRANSLATE_1_DIR_Pin LID_TRANSLATE_2_DIR_Pin LID_ROTATE_1_DIR_Pin LID_ROTATE_2_DIR_Pin
+                           KEG5_FET_Pin CUP_2_IN1_Pin */
+  GPIO_InitStruct.Pin = LID_TRANSLATE_1_DIR_Pin|LID_TRANSLATE_2_DIR_Pin|LID_ROTATE_1_DIR_Pin|LID_ROTATE_2_DIR_Pin
+                          |KEG5_FET_Pin|CUP_2_IN1_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PEBBLE_ICE_TRIG_Pin */
+  GPIO_InitStruct.Pin = PEBBLE_ICE_TRIG_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(PEBBLE_ICE_TRIG_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : CUBE_ICE_DONE_Pin */
+  GPIO_InitStruct.Pin = CUBE_ICE_DONE_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(CUBE_ICE_DONE_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : LID_SEAL_DIR_Pin LID_SINGULATOR_1_RING_1_FET_Pin GANTRY_X2_DIR_Pin LID_SINGULATOR_1_RING_2_FET_Pin
+                           ENABLE_24V_Pin LID_SINGULATOR_2_RING_1_FET_Pin CUP_1_IN1_Pin CUP_1_IN2_Pin
+                           KEG2_FET_Pin */
+  GPIO_InitStruct.Pin = LID_SEAL_DIR_Pin|LID_SINGULATOR_1_RING_1_FET_Pin|GANTRY_X2_DIR_Pin|LID_SINGULATOR_1_RING_2_FET_Pin
+                          |ENABLE_24V_Pin|LID_SINGULATOR_2_RING_1_FET_Pin|CUP_1_IN1_Pin|CUP_1_IN2_Pin
+                          |KEG2_FET_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOF, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : LID_TRANSLATE_2_FAULT_Pin LID_SEAL_FAULT_Pin */
+  GPIO_InitStruct.Pin = LID_TRANSLATE_2_FAULT_Pin|LID_SEAL_FAULT_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOF, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : LID_SINGULATOR_2_RING_2_FET_Pin */
+  GPIO_InitStruct.Pin = LID_SINGULATOR_2_RING_2_FET_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(LID_SINGULATOR_2_RING_2_FET_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : APDS9960_INT_Pin */
+  GPIO_InitStruct.Pin = APDS9960_INT_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(APDS9960_INT_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : CUBE_ICE_TRIG_Pin */
+  GPIO_InitStruct.Pin = CUBE_ICE_TRIG_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(CUBE_ICE_TRIG_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : LID_ROTATE_2_FAULT_Pin CUP_2_SWITCH_Pin */
+  GPIO_InitStruct.Pin = LID_ROTATE_2_FAULT_Pin|CUP_2_SWITCH_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : KEG3_FET_Pin KEG4_FET_Pin SYRINGE_SEL0_Pin SYRINGE_SEL1_Pin
+                           SYRINGE_SEL2_Pin SYRINGE_SEL3_Pin KEG1_FET_Pin */
+  GPIO_InitStruct.Pin = KEG3_FET_Pin|KEG4_FET_Pin|SYRINGE_SEL0_Pin|SYRINGE_SEL1_Pin
+                          |SYRINGE_SEL2_Pin|SYRINGE_SEL3_Pin|KEG1_FET_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOG, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : GANTRY_X_LIMIT_Pin GANTRY_Y_LIMIT_Pin GANTRY_Y_FAULT_Pin LID_TRANSLATE_1_FAULT_Pin
+                           GANTRY_X2_LIMIT_Pin DIP_3_Pin DIP_4_Pin */
+  GPIO_InitStruct.Pin = GANTRY_X_LIMIT_Pin|GANTRY_Y_LIMIT_Pin|GANTRY_Y_FAULT_Pin|LID_TRANSLATE_1_FAULT_Pin
+                          |GANTRY_X2_LIMIT_Pin|DIP_3_Pin|DIP_4_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : CUP_2_IN2_Pin KEG6_FET_Pin CUP_1_TRIG_Pin SYRINGE_IN1_Pin
+                           SYRINGE_IN2_Pin CUP_2_TRIG_Pin */
+  GPIO_InitStruct.Pin = CUP_2_IN2_Pin|KEG6_FET_Pin|CUP_1_TRIG_Pin|SYRINGE_IN1_Pin
+                          |SYRINGE_IN2_Pin|CUP_2_TRIG_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PEBBLE_ICE_DONE_Pin */
+  GPIO_InitStruct.Pin = PEBBLE_ICE_DONE_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(PEBBLE_ICE_DONE_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : USB_FS_PWR_EN_Pin GANTRY_Y_DIR_Pin LID_SUCTION_FET_Pin CUP_1_AIR_1_FET_Pin
+                           CUP_1_AIR_2_FET_Pin CUP_2_AIR_1_FET_Pin CUP_2_AIR_2_FET_Pin GANTRY_X_DIR_Pin */
+  GPIO_InitStruct.Pin = USB_FS_PWR_EN_Pin|GANTRY_Y_DIR_Pin|LID_SUCTION_FET_Pin|CUP_1_AIR_1_FET_Pin
+                          |CUP_1_AIR_2_FET_Pin|CUP_2_AIR_1_FET_Pin|CUP_2_AIR_2_FET_Pin|GANTRY_X_DIR_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : APDS9960_2_SCL_Pin APDS9960_2_SDA_Pin */
+  GPIO_InitStruct.Pin = APDS9960_2_SCL_Pin|APDS9960_2_SDA_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : DIP_1_Pin */
+  GPIO_InitStruct.Pin = DIP_1_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(DIP_1_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : APDS9960_2_INT_Pin */
+  GPIO_InitStruct.Pin = APDS9960_2_INT_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(APDS9960_2_INT_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : USB_FS_OVCR_Pin */
+  GPIO_InitStruct.Pin = USB_FS_OVCR_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(USB_FS_OVCR_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : LID_ROTATE_1_FAULT_Pin LID_TRANSLATE_1_LIMIT_Pin LID_TRANSLATE_2_LIMIT_Pin LID_SEAL_LIMIT_Pin
+                           CUP_1_SWITCH_Pin */
+  GPIO_InitStruct.Pin = LID_ROTATE_1_FAULT_Pin|LID_TRANSLATE_1_LIMIT_Pin|LID_TRANSLATE_2_LIMIT_Pin|LID_SEAL_LIMIT_Pin
+                          |CUP_1_SWITCH_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOG, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : DIP_2_Pin GANTRY_X_FAULT_Pin GANTRY_X2_FAULT_Pin */
+  GPIO_InitStruct.Pin = DIP_2_Pin|GANTRY_X_FAULT_Pin|GANTRY_X2_FAULT_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : USB_FS_VBUS_Pin */
+  GPIO_InitStruct.Pin = USB_FS_VBUS_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(USB_FS_VBUS_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : USB_FS_ID_Pin */
+  GPIO_InitStruct.Pin = USB_FS_ID_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  GPIO_InitStruct.Alternate = GPIO_AF10_OTG1_HS;
+  HAL_GPIO_Init(USB_FS_ID_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : LID_SEAL_SENSOR_Pin */
+  GPIO_InitStruct.Pin = LID_SEAL_SENSOR_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(LID_SEAL_SENSOR_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : LID_SINGULATOR_1_SENSOR_Pin LID_SINGULATOR_2_SENSOR_Pin */
+  GPIO_InitStruct.Pin = LID_SINGULATOR_1_SENSOR_Pin|LID_SINGULATOR_2_SENSOR_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(CUBE_ICE_DONE_EXTI_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(CUBE_ICE_DONE_EXTI_IRQn);
+
+  HAL_NVIC_SetPriority(APDS9960_INT_EXTI_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(APDS9960_INT_EXTI_IRQn);
+
+  HAL_NVIC_SetPriority(APDS9960_2_INT_EXTI_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(APDS9960_2_INT_EXTI_IRQn);
+
+  HAL_NVIC_SetPriority(PEBBLE_ICE_DONE_EXTI_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(PEBBLE_ICE_DONE_EXTI_IRQn);
+
+  /* USER CODE BEGIN MX_GPIO_Init_2 */
+  /* USER CODE END MX_GPIO_Init_2 */
+}
+
+/* USER CODE BEGIN 4 */
+	/***************************************************************************************************************/
+	/*                                                Motor Control                                                */
+	/***************************************************************************************************************/
+
+	/***************************************************************************************************************/
+	/*                                                Interrupts                                                   */
+	/***************************************************************************************************************/
+	void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+	  if (huart->Instance == USART3)    // checks if uart3 is initalized
+	  {
+		if (temp != '\r')   // ensures that the bit '\r' is never saved
+			{
+		  if (indx < sizeof(terminalInput) - 1)   //
+			  {
+			terminalInput[indx++] = temp;
+		  }
+		} else {
+		  terminalInput[indx] = '\0';   // sets index to null terminal
+		  indx = 0;
+
+		  commandReceived = true;
+		}
+
+		HAL_UART_Receive_IT(&huart3, &temp, 1);
+	  }
+	}
+
+	void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+	{
+	   // timer 17 handles keg dispense
+	   if (htim == &htim15) keg_dispense_on_timer_irq();
+
+	  Motor_ServiceIRQ(htim);
+	}
+
+	/***************************************************************************************************************/
+	/*                                                 DC Motor + Encoder                                          */
+	/***************************************************************************************************************/
+
+	/* UpdateEncoderPosition: Reads TIM1, updates 32-bit position. */
+	void UpdateEncoderPosition(void) {
+	  uint16_t cur = __HAL_TIM_GET_COUNTER(&htim1);
+	  int16_t delta = (int16_t) (cur - last_encoder_reading); // handles wrap naturally
+	  extended_position += delta;
+	  last_encoder_reading = cur;
+	}
+
+	static inline void TIM15_SetDutyPct(uint32_t pct) {
+	  if (pct > 100U)
+		pct = 100U;
+	  uint32_t arr = __HAL_TIM_GET_AUTORELOAD(&htim15);      // 65535 in your setup
+	  uint32_t ccr = ((uint64_t) (arr + 1U) * pct) / 100U;    // map 0..100% -> 0..ARR
+	  if (ccr > arr)
+		ccr = arr;
+	  __HAL_TIM_SET_COMPARE(&htim15, TIM_CHANNEL_1, ccr);
+	}
+
+	// Shared trapezoid tuning for syringe DC motion
+	#define SYRINGE_RAMP_PCT   (45U)  // 0..50 (% accel and % decel)
+	#define SYRINGE_MIN_DUTY   (25U)  // 0..100 (% duty) min duty to overcome static friction
+
+	static inline uint32_t clamp_u32(uint32_t v, uint32_t lo, uint32_t hi) {
+	  if (v < lo) return lo;
+	  if (v > hi) return hi;
+	  return v;
+	}
+
+	static inline uint32_t ramp_from_remaining(uint32_t max_duty, uint32_t min_duty,
+											  uint32_t remain, uint32_t ramp_steps)
+	{
+	  if (ramp_steps == 0U) return max_duty;
+	  if (remain >= ramp_steps) return max_duty;
+
+	  // remain: ramp_steps..0  -> duty: max..min
+	  uint32_t duty = min_duty + (uint32_t)(((uint64_t)(max_duty - min_duty) * remain) / ramp_steps);
+	  if (duty < min_duty) duty = min_duty;
+	  return duty;
+	}
+
+	// If encoder doesn't change for this long during a move -> fail/abort (ms)
+	#define SYRINGE_NO_ENCODER_TIMEOUT_MS  1000U
+
+	static inline void syringe_abort_outputs(void)
+	{
+	  HAL_TIM_PWM_Stop(&htim15, TIM_CHANNEL_1);
+	  TIM15_SetDutyPct(0);
+
+	  // motor off
+	  HAL_GPIO_WritePin(SYRINGE_IN1_GPIO_Port, SYRINGE_IN1_Pin, GPIO_PIN_RESET);
+	  HAL_GPIO_WritePin(SYRINGE_IN2_GPIO_Port, SYRINGE_IN2_Pin, GPIO_PIN_RESET);
+	}
+
+	/**
+	 * moveForward: target is start_pos - move_value (encoder counts decrease).
+	 * retract_pct is the max duty (%).
+	 */
+	bool moveForward(uint32_t move_value, uint32_t retract_pct)
+	{
+	  if (move_value == 0) return true;
+
+	  UpdateEncoderPosition();
+	  int32_t start_pos = extended_position;
+	  int32_t target    = start_pos - (int32_t)move_value;
+
+	  uint32_t ramp_pct = clamp_u32(SYRINGE_RAMP_PCT, 0U, 50U);
+	  uint32_t min_duty = clamp_u32(SYRINGE_MIN_DUTY, 0U, 100U);
+
+	  retract_pct = clamp_u32(retract_pct, 0U, 100U);
+	  if (retract_pct < min_duty) retract_pct = min_duty;
+
+	  uint32_t ramp_steps = (move_value * ramp_pct) / 100U;
+	  if ((2U * ramp_steps) > move_value) ramp_steps = move_value / 2U;
+
+	  // Set direction to forward
+	  HAL_GPIO_WritePin(SYRINGE_IN1_GPIO_Port, SYRINGE_IN1_Pin, GPIO_PIN_SET);
+	  HAL_GPIO_WritePin(SYRINGE_IN2_GPIO_Port, SYRINGE_IN2_Pin, GPIO_PIN_RESET);
+
+	  HAL_TIM_PWM_Start(&htim15, TIM_CHANNEL_1);
+
+	  // --- Stall detection state ---
+	  uint32_t last_change_ms = HAL_GetTick();
+	  int32_t  last_pos       = extended_position;
+
+	  while (1) {
+	    UpdateEncoderPosition();
+
+	    // Detect encoder movement
+	    if (extended_position != last_pos) {
+	      last_pos = extended_position;
+	      last_change_ms = HAL_GetTick();
+	    } else {
+	      // No change; check timeout
+	      if ((HAL_GetTick() - last_change_ms) > SYRINGE_NO_ENCODER_TIMEOUT_MS) {
+	        snprintf(s_stall_msg, sizeof(s_stall_msg),
+	                 "rack=%d motor=%d DOWN: start=%ld target=%ld pos=%ld",
+	                 s_stall_rack, s_stall_motor,
+	                 (long)start_pos, (long)target, (long)extended_position);
+	        printf("ERROR: Syringe encoder stalled (%s)\r\n", s_stall_msg);
+	        syringe_abort_outputs();
+	        return false;
+	      }
+	    }
+
+	    // Remaining distance to target (counts)
+	    int32_t err = extended_position - target; // forward wants to go DOWN
+	    if (err <= 0) break;                      // reached/passed target
+
+	    uint32_t remain = (uint32_t)err;
+	    uint32_t moved  = (uint32_t)(start_pos - extended_position);
+
+	    uint32_t duty;
+	    // accel for first ramp_steps, then decel based on remaining distance
+	    if (ramp_steps != 0U && moved < ramp_steps) {
+	      duty = min_duty + (uint32_t)(((uint64_t)(retract_pct - min_duty) * moved) / ramp_steps);
+	    } else {
+	      duty = ramp_from_remaining(retract_pct, min_duty, remain, ramp_steps);
+	    }
+
+	    TIM15_SetDutyPct(duty);
+	    // Optional: avoid spamming prints if this is tight-looping
+	    // printf("Target: %ld, Actual: %ld, Duty: %ld\n", (long)target, (long)extended_position, (long)duty);
+	  }
+
+	  syringe_abort_outputs(); // stops PWM + turns off pins (safe shutdown)
+	  printf("Target: %ld, Actual: %ld\r\n", (long)target, (long)extended_position);
+	  return true;
+	}
+
+	/**
+	 * moveBackward: target is start_pos + move_value (encoder counts increase).
+	 * speed_pct is the max duty (%).
+	 */
+	bool moveBackward(uint32_t move_value, uint32_t speed_pct)
+	{
+	  if (move_value == 0) return true;
+
+	  UpdateEncoderPosition();
+	  int32_t start_pos = extended_position;
+	  int32_t target    = start_pos + (int32_t)move_value;
+
+	  uint32_t ramp_pct = clamp_u32(SYRINGE_RAMP_PCT, 0U, 50U);
+	  uint32_t min_duty = clamp_u32(SYRINGE_MIN_DUTY, 0U, 100U);
+
+	  speed_pct = clamp_u32(speed_pct, 0U, 100U);
+	  if (speed_pct < min_duty) speed_pct = min_duty;
+
+	  uint32_t ramp_steps = (move_value * ramp_pct) / 100U;
+	  if ((2U * ramp_steps) > move_value) ramp_steps = move_value / 2U;
+
+	  // Set direction to backward
+	  HAL_GPIO_WritePin(SYRINGE_IN1_GPIO_Port, SYRINGE_IN1_Pin, GPIO_PIN_RESET);
+	  HAL_GPIO_WritePin(SYRINGE_IN2_GPIO_Port, SYRINGE_IN2_Pin, GPIO_PIN_SET);
+
+	  HAL_TIM_PWM_Start(&htim15, TIM_CHANNEL_1);
+
+	  // --- Stall detection state ---
+	  uint32_t last_change_ms = HAL_GetTick();
+	  int32_t  last_pos       = extended_position;
+
+	  while (1) {
+	    UpdateEncoderPosition();
+
+	    if (extended_position != last_pos) {
+	      last_pos = extended_position;
+	      last_change_ms = HAL_GetTick();
+	    } else {
+	      if ((HAL_GetTick() - last_change_ms) > SYRINGE_NO_ENCODER_TIMEOUT_MS) {
+	        snprintf(s_stall_msg, sizeof(s_stall_msg),
+	                 "rack=%d motor=%d UP: start=%ld target=%ld pos=%ld",
+	                 s_stall_rack, s_stall_motor,
+	                 (long)start_pos, (long)target, (long)extended_position);
+	        printf("ERROR: Syringe encoder stalled (%s)\r\n", s_stall_msg);
+	        syringe_abort_outputs();
+	        return false;
+	      }
+	    }
+
+	    // Remaining distance to target (counts)
+	    int32_t err = target - extended_position; // backward wants to go UP
+	    if (err <= 0) break;
+
+	    uint32_t remain = (uint32_t)err;
+	    uint32_t moved  = (uint32_t)(extended_position - start_pos);
+
+	    uint32_t duty;
+	    if (ramp_steps != 0U && moved < ramp_steps) {
+	      duty = min_duty + (uint32_t)(((uint64_t)(speed_pct - min_duty) * moved) / ramp_steps);
+	    } else {
+	      duty = ramp_from_remaining(speed_pct, min_duty, remain, ramp_steps);
+	    }
+
+	    TIM15_SetDutyPct(duty);
+	    // printf("Target: %ld, Actual: %ld, Duty: %ld\n", (long)target, (long)extended_position, (long)duty);
+	  }
+
+	  syringe_abort_outputs();
+	  return true;
+	}
+
+	static void send_gratuitous_arp(void *arg) {
+	  struct netif *netif = (struct netif*) arg;
+	  /* Broadcast a gratuitous ARP for this netif's own IP */
+	  etharp_gratuitous(netif);
+	  /* Re-schedule this function to run again after the interval */
+	  sys_timeout(GRATUITOUS_ARP_INTERVAL_MS, send_gratuitous_arp, netif);
+	}
+
+
+	
+/* USER CODE END 4 */
+
+/**
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
+void Error_Handler(void)
+{
+  /* USER CODE BEGIN Error_Handler_Debug */
+  /* USER CODE END Error_Handler_Debug */
+}
+
+#ifdef  USE_FULL_ASSERT
+/**
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
+void assert_failed(uint8_t *file, uint32_t line)
+{
+  /* USER CODE BEGIN 6 */
+  /* USER CODE END 6 */
+}
+#endif /* USE_FULL_ASSERT */

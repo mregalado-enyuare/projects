@@ -1,0 +1,10 @@
+13:05:44 **** Incremental Build of configuration Debug for project ExternalLEDBlink ****
+make -j22 all 
+arm-none-eabi-size  ExternalLEDBlink.elf 
+   text	   data	    bss	    dec	    hex	filename
+   7620	     16	   1568	   9204	   23f4	ExternalLEDBlink.elf
+Finished building: default.size.stdout
+ 
+
+13:05:44 Build Finished. 0 errors, 0 warnings. (took 408ms)
+

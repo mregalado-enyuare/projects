@@ -1,0 +1,5 @@
+../Core/Src/cup_detector.c:36:14:GetAverage	4
+../Core/Src/cup_detector.c:46:21:ClassifyDistance	7
+../Core/Src/cup_detector.c:63:6:CupDetector_Update	7
+../Core/Src/cup_detector.c:94:16:GetSystemConsensus	12
+../Core/Src/cup_detector.c:118:9:GetCupCount	7

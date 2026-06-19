@@ -1,0 +1,5 @@
+../Core/Src/hcsr04.c:6:13:Trigger	1
+../Core/Src/hcsr04.c:15:6:HCSR04_Init	1
+../Core/Src/hcsr04.c:25:7:HCSR04_Read	5
+../Core/Src/hcsr04.c:65:7:HCSR04_ReadAvg	4
+../Core/Src/hcsr04.c:85:6:HCSR04_ScanAll	2

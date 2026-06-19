@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<session version="1.0">
+<refactoring comment="Move &apos;vl53l4cd.c&apos; to &apos;Src&apos;" description="Move &apos;vl53l4cd.c&apos; to &apos;Src&apos;" destination="Core/Src" element1="Core/Inc/vl53l4cd.c" flags="7" id="org.eclipse.ltk.core.refactoring.move.resources" resources="1" stamp="1781099281946" updateReferences="true"/>
+</session>

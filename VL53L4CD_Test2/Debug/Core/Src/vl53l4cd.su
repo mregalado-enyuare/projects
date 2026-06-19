@@ -1,0 +1,13 @@
+../Core/Src/vl53l4cd.c:37:16:rd_byte	40	static
+../Core/Src/vl53l4cd.c:43:16:wr_byte	32	static
+../Core/Src/vl53l4cd.c:49:16:rd_word	48	static
+../Core/Src/vl53l4cd.c:58:16:wr_word	40	static
+../Core/Src/vl53l4cd.c:65:16:rd_dword	48	static
+../Core/Src/vl53l4cd.c:75:16:wr_dword	48	static
+../Core/Src/vl53l4cd.c:82:16:VL53L4CD_Init	24	static
+../Core/Src/vl53l4cd.c:125:16:VL53L4CD_SetRangeTiming	56	static
+../Core/Src/vl53l4cd.c:174:16:VL53L4CD_StartRanging	32	static
+../Core/Src/vl53l4cd.c:195:16:VL53L4CD_StopRanging	16	static
+../Core/Src/vl53l4cd.c:200:16:VL53L4CD_CheckForDataReady	24	static
+../Core/Src/vl53l4cd.c:213:16:VL53L4CD_ClearInterrupt	16	static
+../Core/Src/vl53l4cd.c:218:16:VL53L4CD_GetResult	24	static

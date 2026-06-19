@@ -1,0 +1,703 @@
+/* USER CODE BEGIN Header */
+/* USER CODE END Header */
+/* Includes ------------------------------------------------------------------*/
+#include "main.h"
+
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
+	#include "vl53l4cd.h"
+	#include "homing_x.h"
+	#include <stdbool.h>
+	#include <stdio.h>
+	#include <stdlib.h>
+	#include <string.h>
+	#include <ctype.h>
+	#include "commands.h"
+	#include "motors.h"
+	#include "udp_server.h"
+	#include "stm32h7xx_hal_eth.h"
+	#include "netif.h"
+	#include "dm556_parabolic_motion.h"
+	#include "lid_motors.h"
+	#include "async_bus.h"
+	#include "udp_server.h"
+	#include "keg_dispense.h"
+	#include "ice_dispenser.h"
+/* USER CODE END Includes */
+
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN PTD */
+/* USER CODE END PTD */
+
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+/* USER CODE END PD */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+/* USER CODE END PM */
+
+/* Private variables ---------------------------------------------------------*/
+
+COM_InitTypeDef BspCOMInit;
+
+I2C_HandleTypeDef hi2c3;
+
+/* USER CODE BEGIN PV */
+
+	#define NUM_MOTORS  2
+
+	MotorControl_t motors[NUM_MOTORS] = {
+	// Gantry Motor 0
+		{ .dirPort = GANTRY_X_DIR_GPIO_Port, .dirPin = GANTRY_X_DIR_Pin, .htim = &htim23, .timChannel = TIM_CHANNEL_1,
+
+		.stepCount = 0, .state = MOTOR_STATE_IDLE, .baseARR = 150, .decelARR = 1200, .decelSteps = 1000,
+
+		.stepProfile = NULL, .profileSize = 0, .profileIndex = 0, },
+
+		// Gantry Motor 1
+		{ .dirPort = GANTRY_Y_DIR_GPIO_Port, .dirPin = GANTRY_Y_DIR_Pin, .htim = &htim5, .timChannel = TIM_CHANNEL_1,
+
+		.stepCount = 0, .state = MOTOR_STATE_IDLE, .baseARR = 150, .decelARR = 1200, .decelSteps = 1000,
+
+		.stepProfile = NULL, .profileSize = 0, .profileIndex = 0, }, };
+
+	// Gantry Position
+	int32_t gantryXPos = 0;
+	int32_t gantryYPos = 0;
+
+	// variables for getting uart input
+	uint8_t temp;
+	uint8_t terminalInput[100];
+	uint8_t indx = 0;
+
+	// state tracker for if UART command has been received
+	bool commandReceived = false;
+
+	volatile uint32_t counter = 0;
+	volatile uint32_t target_position = 0;
+	volatile int32_t extended_position = 0;
+	volatile uint16_t last_encoder_reading = 0;
+
+	static char s_stall_msg[96] = "";
+	static int  s_stall_rack  = 0;
+	static int  s_stall_motor = 0;
+	const char *syringe_last_stall_msg(void) { return s_stall_msg; }
+	void syringe_clear_stall_msg(void) { s_stall_msg[0] = '\0'; }
+	void syringe_set_stall_context(int rack_num, int motor_id) { s_stall_rack = rack_num; s_stall_motor = motor_id; }
+
+	/* Ethernet */
+	#define LAN8742A_PHY_ADDR     0U
+	#define PHY_REG_BSR           1U
+	#define  PHY_BSR_LINK_UP      (1U<<2)
+	#define PHY_REG_PHYSTS        31U
+	#define  PHY_PHYSTS_SPEED_100 (1U<<2)
+	#define  PHY_PHYSTS_DUPLEX_F  (1U<<3)
+
+	#define GRATUITOUS_ARP_INTERVAL_MS 15000U
+
+	/* Distance sensor globals */
+	volatile uint16_t g_distance_mm    = 0;   /* latest valid distance reading  */
+	volatile uint8_t  g_distance_valid = 0;   /* 1 = reading is valid           */
+	#define DISTANCE_PRINT_INTERVAL_MS  500U   /* how often to print via UART    */
+
+/* USER CODE END PV */
+
+/* Private function prototypes -----------------------------------------------*/
+void SystemClock_Config(void);
+static void MPU_Config(void);
+static void MX_GPIO_Init(void);
+static void MX_I2C3_Init(void);
+/* USER CODE BEGIN PFP */
+	extern ETH_HandleTypeDef heth;
+	extern UART_HandleTypeDef huart3;
+
+	static void send_gratuitous_arp(void *arg);
+	void Distance_Init(void);
+	void Distance_Poll(void);
+/* USER CODE END PFP */
+
+/* Private user code ---------------------------------------------------------*/
+/* USER CODE BEGIN 0 */
+	void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart);
+	void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim);
+
+	void UpdateEncoderPosition(void);
+	bool moveForward(uint32_t move_value, uint32_t speed);
+	bool moveBackward(uint32_t move_value, uint32_t speed);
+	const char *syringe_last_stall_msg(void);
+	void syringe_clear_stall_msg(void);
+	void syringe_set_stall_context(int rack_num, int motor_id);
+/* USER CODE END 0 */
+
+/**
+  * @brief  The application entry point.
+  * @retval int
+  */
+int main(void)
+{
+
+  /* USER CODE BEGIN 1 */
+	  __disable_irq();
+	  __DSB();
+	  __ISB();
+
+	  SCB_InvalidateDCache();
+
+	  SCB->CCR &= ~SCB_CCR_DC_Msk;
+	  __DSB();
+	  __ISB();
+
+	  __enable_irq();
+
+	  HAL_NVIC_SetPriority(SysTick_IRQn, 0, 0);
+
+  /* USER CODE END 1 */
+
+  /* MPU Configuration--------------------------------------------------------*/
+  MPU_Config();
+
+  /* MCU Configuration--------------------------------------------------------*/
+
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+  HAL_Init();
+
+  /* USER CODE BEGIN Init */
+  /* USER CODE END Init */
+
+  /* Configure the system clock */
+  SystemClock_Config();
+
+  /* USER CODE BEGIN SysInit */
+  /* USER CODE END SysInit */
+
+  /* Initialize all configured peripherals */
+  MX_GPIO_Init();
+  MX_I2C3_Init();
+  /* USER CODE BEGIN 2 */
+
+	  lid_motors_init();
+	  ice_dispenser_init();
+
+	  // Read DIP Switches
+	  uint8_t dip1 = (HAL_GPIO_ReadPin(DIP_1_GPIO_Port, DIP_1_Pin) == GPIO_PIN_RESET) ? 0 : 1;
+	  uint8_t dip2 = (HAL_GPIO_ReadPin(DIP_2_GPIO_Port, DIP_2_Pin) == GPIO_PIN_RESET) ? 0 : 1;
+	  uint8_t dip3 = (HAL_GPIO_ReadPin(DIP_3_GPIO_Port, DIP_3_Pin) == GPIO_PIN_RESET) ? 0 : 1;
+	  uint8_t dip4 = (HAL_GPIO_ReadPin(DIP_4_GPIO_Port, DIP_4_Pin) == GPIO_PIN_RESET) ? 0 : 1;
+
+	  char msg[64];
+	  int n = snprintf(msg, sizeof(msg),
+					   "DIP1:%u DIP2:%u DIP3:%u DIP4:%u\r\n",
+					   dip1, dip2, dip3, dip4);
+	  if (n > 0) HAL_UART_Transmit(&huart3, (uint8_t*)msg, (uint16_t)n, HAL_MAX_DELAY);
+
+	  uint8_t dip_value = (dip1 << 1) | dip2;
+	  uint8_t bank_on   = (dip3 == 0) ? 1 : 0;
+	  uint8_t board_id  = (uint8_t)(dip_value + 1 + (bank_on * 5));
+
+	  // Ethernet Setup
+	  udp_server_init(board_id);
+
+	  if (HAL_ETH_Start(&heth) != HAL_OK) {
+		Error_Handler();
+	  }
+
+	  HAL_Delay(1000);
+
+	  sys_timeout(GRATUITOUS_ARP_INTERVAL_MS, send_gratuitous_arp, netif_default);
+	  etharp_gratuitous(netif_default);
+
+	  char ipstr[32];
+	  ip4addr_ntoa_r(&netif_default->ip_addr, ipstr, sizeof(ipstr));
+	  HAL_UART_Transmit(&huart3, (uint8_t*) "My IP: ", 7, HAL_MAX_DELAY);
+	  HAL_UART_Transmit(&huart3, (uint8_t*) ipstr, strlen(ipstr), HAL_MAX_DELAY);
+	  HAL_UART_Transmit(&huart3, (uint8_t*) "\r\n", 2, HAL_MAX_DELAY);
+
+	  __enable_irq();
+	  HAL_NVIC_SetPriority(USART3_IRQn, 1, 0);
+	  HAL_NVIC_EnableIRQ(USART3_IRQn);
+
+	  HAL_UART_Receive_IT(&huart3, &temp, 1);
+
+	  HAL_TIM_Encoder_Start(&htim1, TIM_CHANNEL_ALL);
+
+	  last_encoder_reading = 0;
+	  extended_position = 0;
+	  counter = __HAL_TIM_GET_COUNTER(&htim1);
+
+	  // Enable 24V motors on boot
+	  HAL_GPIO_WritePin(ENABLE_24V_GPIO_Port, ENABLE_24V_Pin, GPIO_PIN_SET);
+
+	  /* VL53L4CD distance sensor init */
+	  Distance_Init();
+
+  /* USER CODE END 2 */
+
+  /* Initialize leds */
+  BSP_LED_Init(LED_GREEN);
+  BSP_LED_Init(LED_YELLOW);
+  BSP_LED_Init(LED_RED);
+
+  /* Initialize USER push-button, will be used to trigger an interrupt each time it's pressed.*/
+  BSP_PB_Init(BUTTON_USER, BUTTON_MODE_EXTI);
+
+  /* Initialize COM1 port (115200, 8 bits (7-bit data + 1 stop bit), no parity */
+  BspCOMInit.BaudRate   = 115200;
+  BspCOMInit.WordLength = COM_WORDLENGTH_8B;
+  BspCOMInit.StopBits   = COM_STOPBITS_1;
+  BspCOMInit.Parity     = COM_PARITY_NONE;
+  BspCOMInit.HwFlowCtl  = COM_HWCONTROL_NONE;
+  if (BSP_COM_Init(COM1, &BspCOMInit) != BSP_ERROR_NONE)
+  {
+    Error_Handler();
+  }
+
+  /* Infinite loop */
+  /* USER CODE BEGIN WHILE */
+  while (1)
+  {
+	  MX_LWIP_Process();
+	  udp_async_pump();
+	  GotoSeq_Pump();
+	  HomingX_Pump();
+	  CalibrateDual_Pump();
+	  LidCal_Pump();
+	  udp_log_process();
+	  HAL_IWDG_Refresh(&hiwdg1);
+    /* USER CODE END WHILE */
+
+    /* USER CODE BEGIN 3 */
+	  Distance_Poll();
+  }
+  /* USER CODE END 3 */
+}
+
+/**
+  * @brief System Clock Configuration
+  * @retval None
+  */
+void SystemClock_Config(void)
+{
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+  /** Supply configuration update enable
+  */
+  HAL_PWREx_ConfigSupply(PWR_LDO_SUPPLY);
+
+  /** Configure the main internal regulator output voltage
+  */
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE2);
+
+  while(!__HAL_PWR_GET_FLAG(PWR_FLAG_VOSRDY)) {}
+
+  /** Initializes the RCC Oscillators according to the specified parameters
+  * in the RCC_OscInitTypeDef structure.
+  */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.HSIState = RCC_HSI_DIV1;
+  RCC_OscInitStruct.HSICalibrationValue = 64;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+  RCC_OscInitStruct.PLL.PLLM = 4;
+  RCC_OscInitStruct.PLL.PLLN = 12;
+  RCC_OscInitStruct.PLL.PLLP = 1;
+  RCC_OscInitStruct.PLL.PLLQ = 4;
+  RCC_OscInitStruct.PLL.PLLR = 2;
+  RCC_OscInitStruct.PLL.PLLRGE = RCC_PLL1VCIRANGE_3;
+  RCC_OscInitStruct.PLL.PLLVCOSEL = RCC_PLL1VCOWIDE;
+  RCC_OscInitStruct.PLL.PLLFRACN = 0;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2
+                              |RCC_CLOCKTYPE_D3PCLK1|RCC_CLOCKTYPE_D1PCLK1;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+  RCC_ClkInitStruct.SYSCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_HCLK_DIV2;
+  RCC_ClkInitStruct.APB3CLKDivider = RCC_APB3_DIV2;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_APB1_DIV2;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_APB2_DIV2;
+  RCC_ClkInitStruct.APB4CLKDivider = RCC_APB4_DIV2;
+
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
+  * @brief I2C3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C3_Init(void)
+{
+
+  /* USER CODE BEGIN I2C3_Init 0 */
+
+  /* USER CODE END I2C3_Init 0 */
+
+  /* USER CODE BEGIN I2C3_Init 1 */
+
+  /* USER CODE END I2C3_Init 1 */
+  hi2c3.Instance = I2C3;
+  hi2c3.Init.Timing = 0x20303E5D;
+  hi2c3.Init.OwnAddress1 = 0;
+  hi2c3.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c3.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c3.Init.OwnAddress2 = 0;
+  hi2c3.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+  hi2c3.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c3.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Analogue filter
+  */
+  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c3, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Digital filter
+  */
+  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c3, 0) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C3_Init 2 */
+
+  /* USER CODE END I2C3_Init 2 */
+
+}
+
+/**
+  * @brief GPIO Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_GPIO_Init(void)
+{
+  /* USER CODE BEGIN MX_GPIO_Init_1 */
+
+  /* USER CODE END MX_GPIO_Init_1 */
+
+  /* GPIO Ports Clock Enable */
+  __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+
+  /* USER CODE BEGIN MX_GPIO_Init_2 */
+
+  /* USER CODE END MX_GPIO_Init_2 */
+}
+
+/* USER CODE BEGIN 4 */
+
+	/***************************************************************************************************************/
+	/*                                          Distance Sensor                                                    */
+	/***************************************************************************************************************/
+
+	void Distance_Init(void)
+	{
+	    VL53L4CD_Error vst = VL53L4CD_Init(&hi2c3);
+	    if (vst != VL53L4CD_OK) {
+	        char msg[48];
+	        int  n = snprintf(msg, sizeof(msg), "VL53L4CD init failed: %d\r\n", vst);
+	        HAL_UART_Transmit(&huart3, (uint8_t *)msg, (uint16_t)n, HAL_MAX_DELAY);
+	        return;
+	    }
+	    VL53L4CD_StartRanging(&hi2c3);
+	    HAL_UART_Transmit(&huart3, (uint8_t *)"VL53L4CD ready\r\n", 16, HAL_MAX_DELAY);
+	}
+
+	void Distance_Poll(void)
+	{
+	    static uint32_t last_print_ms = 0;
+
+	    uint8_t ready = 0;
+	    VL53L4CD_CheckForDataReady(&hi2c3, &ready);
+	    if (!ready) return;
+
+	    VL53L4CD_Result_t res;
+	    VL53L4CD_GetResult(&hi2c3, &res);
+	    VL53L4CD_ClearInterrupt(&hi2c3);
+
+	    if (res.range_status == 0) {
+	        g_distance_mm    = res.distance_mm;
+	        g_distance_valid = 1;
+	    } else {
+	        g_distance_valid = 0;
+	    }
+
+	    uint32_t now = HAL_GetTick();
+	    if ((now - last_print_ms) >= DISTANCE_PRINT_INTERVAL_MS) {
+	        last_print_ms = now;
+	        char msg[48];
+	        int  n;
+	        if (g_distance_valid)
+	            n = snprintf(msg, sizeof(msg), "Dist: %u mm\r\n", g_distance_mm);
+	        else
+	            n = snprintf(msg, sizeof(msg), "Dist: err (status=%u)\r\n", res.range_status);
+	        HAL_UART_Transmit(&huart3, (uint8_t *)msg, (uint16_t)n, HAL_MAX_DELAY);
+	    }
+	}
+
+	/***************************************************************************************************************/
+	/*                                                Interrupts                                                   */
+	/***************************************************************************************************************/
+
+	void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+	  if (huart->Instance == USART3)
+	  {
+		if (temp != '\r')
+		{
+		  if (indx < sizeof(terminalInput) - 1)
+		  {
+			terminalInput[indx++] = temp;
+		  }
+		} else {
+		  terminalInput[indx] = '\0';
+		  indx = 0;
+		  commandReceived = true;
+		}
+		HAL_UART_Receive_IT(&huart3, &temp, 1);
+	  }
+	}
+
+	void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+	{
+	   if (htim == &htim15) keg_dispense_on_timer_irq();
+	   Motor_ServiceIRQ(htim);
+	}
+
+	/***************************************************************************************************************/
+	/*                                           DC Motor + Encoder                                                */
+	/***************************************************************************************************************/
+
+	void UpdateEncoderPosition(void) {
+	  uint16_t cur = __HAL_TIM_GET_COUNTER(&htim1);
+	  int16_t delta = (int16_t)(cur - last_encoder_reading);
+	  extended_position += delta;
+	  last_encoder_reading = cur;
+	}
+
+	static inline void TIM15_SetDutyPct(uint32_t pct) {
+	  if (pct > 100U) pct = 100U;
+	  uint32_t arr = __HAL_TIM_GET_AUTORELOAD(&htim15);
+	  uint32_t ccr = ((uint64_t)(arr + 1U) * pct) / 100U;
+	  if (ccr > arr) ccr = arr;
+	  __HAL_TIM_SET_COMPARE(&htim15, TIM_CHANNEL_1, ccr);
+	}
+
+	#define SYRINGE_RAMP_PCT   (45U)
+	#define SYRINGE_MIN_DUTY   (25U)
+
+	static inline uint32_t clamp_u32(uint32_t v, uint32_t lo, uint32_t hi) {
+	  if (v < lo) return lo;
+	  if (v > hi) return hi;
+	  return v;
+	}
+
+	static inline uint32_t ramp_from_remaining(uint32_t max_duty, uint32_t min_duty,
+											  uint32_t remain, uint32_t ramp_steps)
+	{
+	  if (ramp_steps == 0U) return max_duty;
+	  if (remain >= ramp_steps) return max_duty;
+	  uint32_t duty = min_duty + (uint32_t)(((uint64_t)(max_duty - min_duty) * remain) / ramp_steps);
+	  if (duty < min_duty) duty = min_duty;
+	  return duty;
+	}
+
+	#define SYRINGE_NO_ENCODER_TIMEOUT_MS  1000U
+
+	static inline void syringe_abort_outputs(void)
+	{
+	  HAL_TIM_PWM_Stop(&htim15, TIM_CHANNEL_1);
+	  TIM15_SetDutyPct(0);
+	  HAL_GPIO_WritePin(SYRINGE_IN1_GPIO_Port, SYRINGE_IN1_Pin, GPIO_PIN_RESET);
+	  HAL_GPIO_WritePin(SYRINGE_IN2_GPIO_Port, SYRINGE_IN2_Pin, GPIO_PIN_RESET);
+	}
+
+	bool moveForward(uint32_t move_value, uint32_t retract_pct)
+	{
+	  if (move_value == 0) return true;
+
+	  UpdateEncoderPosition();
+	  int32_t start_pos = extended_position;
+	  int32_t target    = start_pos - (int32_t)move_value;
+
+	  uint32_t ramp_pct  = clamp_u32(SYRINGE_RAMP_PCT, 0U, 50U);
+	  uint32_t min_duty  = clamp_u32(SYRINGE_MIN_DUTY, 0U, 100U);
+	  retract_pct        = clamp_u32(retract_pct, 0U, 100U);
+	  if (retract_pct < min_duty) retract_pct = min_duty;
+
+	  uint32_t ramp_steps = (move_value * ramp_pct) / 100U;
+	  if ((2U * ramp_steps) > move_value) ramp_steps = move_value / 2U;
+
+	  HAL_GPIO_WritePin(SYRINGE_IN1_GPIO_Port, SYRINGE_IN1_Pin, GPIO_PIN_SET);
+	  HAL_GPIO_WritePin(SYRINGE_IN2_GPIO_Port, SYRINGE_IN2_Pin, GPIO_PIN_RESET);
+	  HAL_TIM_PWM_Start(&htim15, TIM_CHANNEL_1);
+
+	  uint32_t last_change_ms = HAL_GetTick();
+	  int32_t  last_pos       = extended_position;
+
+	  while (1) {
+	    UpdateEncoderPosition();
+	    if (extended_position != last_pos) {
+	      last_pos = extended_position;
+	      last_change_ms = HAL_GetTick();
+	    } else {
+	      if ((HAL_GetTick() - last_change_ms) > SYRINGE_NO_ENCODER_TIMEOUT_MS) {
+	        snprintf(s_stall_msg, sizeof(s_stall_msg),
+	                 "rack=%d motor=%d DOWN: start=%ld target=%ld pos=%ld",
+	                 s_stall_rack, s_stall_motor,
+	                 (long)start_pos, (long)target, (long)extended_position);
+	        printf("ERROR: Syringe encoder stalled (%s)\r\n", s_stall_msg);
+	        syringe_abort_outputs();
+	        return false;
+	      }
+	    }
+	    int32_t err = extended_position - target;
+	    if (err <= 0) break;
+
+	    uint32_t remain = (uint32_t)err;
+	    uint32_t moved  = (uint32_t)(start_pos - extended_position);
+	    uint32_t duty;
+	    if (ramp_steps != 0U && moved < ramp_steps)
+	      duty = min_duty + (uint32_t)(((uint64_t)(retract_pct - min_duty) * moved) / ramp_steps);
+	    else
+	      duty = ramp_from_remaining(retract_pct, min_duty, remain, ramp_steps);
+
+	    TIM15_SetDutyPct(duty);
+	  }
+
+	  syringe_abort_outputs();
+	  printf("Target: %ld, Actual: %ld\r\n", (long)target, (long)extended_position);
+	  return true;
+	}
+
+	bool moveBackward(uint32_t move_value, uint32_t speed_pct)
+	{
+	  if (move_value == 0) return true;
+
+	  UpdateEncoderPosition();
+	  int32_t start_pos = extended_position;
+	  int32_t target    = start_pos + (int32_t)move_value;
+
+	  uint32_t ramp_pct = clamp_u32(SYRINGE_RAMP_PCT, 0U, 50U);
+	  uint32_t min_duty = clamp_u32(SYRINGE_MIN_DUTY, 0U, 100U);
+	  speed_pct         = clamp_u32(speed_pct, 0U, 100U);
+	  if (speed_pct < min_duty) speed_pct = min_duty;
+
+	  uint32_t ramp_steps = (move_value * ramp_pct) / 100U;
+	  if ((2U * ramp_steps) > move_value) ramp_steps = move_value / 2U;
+
+	  HAL_GPIO_WritePin(SYRINGE_IN1_GPIO_Port, SYRINGE_IN1_Pin, GPIO_PIN_RESET);
+	  HAL_GPIO_WritePin(SYRINGE_IN2_GPIO_Port, SYRINGE_IN2_Pin, GPIO_PIN_SET);
+	  HAL_TIM_PWM_Start(&htim15, TIM_CHANNEL_1);
+
+	  uint32_t last_change_ms = HAL_GetTick();
+	  int32_t  last_pos       = extended_position;
+
+	  while (1) {
+	    UpdateEncoderPosition();
+	    if (extended_position != last_pos) {
+	      last_pos = extended_position;
+	      last_change_ms = HAL_GetTick();
+	    } else {
+	      if ((HAL_GetTick() - last_change_ms) > SYRINGE_NO_ENCODER_TIMEOUT_MS) {
+	        snprintf(s_stall_msg, sizeof(s_stall_msg),
+	                 "rack=%d motor=%d UP: start=%ld target=%ld pos=%ld",
+	                 s_stall_rack, s_stall_motor,
+	                 (long)start_pos, (long)target, (long)extended_position);
+	        printf("ERROR: Syringe encoder stalled (%s)\r\n", s_stall_msg);
+	        syringe_abort_outputs();
+	        return false;
+	      }
+	    }
+	    int32_t err = target - extended_position;
+	    if (err <= 0) break;
+
+	    uint32_t remain = (uint32_t)err;
+	    uint32_t moved  = (uint32_t)(extended_position - start_pos);
+	    uint32_t duty;
+	    if (ramp_steps != 0U && moved < ramp_steps)
+	      duty = min_duty + (uint32_t)(((uint64_t)(speed_pct - min_duty) * moved) / ramp_steps);
+	    else
+	      duty = ramp_from_remaining(speed_pct, min_duty, remain, ramp_steps);
+
+	    TIM15_SetDutyPct(duty);
+	  }
+
+	  syringe_abort_outputs();
+	  return true;
+	}
+
+	static void send_gratuitous_arp(void *arg) {
+	  struct netif *netif = (struct netif*) arg;
+	  etharp_gratuitous(netif);
+	  sys_timeout(GRATUITOUS_ARP_INTERVAL_MS, send_gratuitous_arp, netif);
+	}
+
+/* USER CODE END 4 */
+
+ /* MPU Configuration */
+
+void MPU_Config(void)
+{
+  MPU_Region_InitTypeDef MPU_InitStruct = {0};
+
+  /* Disables the MPU */
+  HAL_MPU_Disable();
+
+  /** Initializes and configures the Region and the memory to be protected
+  */
+  MPU_InitStruct.Enable = MPU_REGION_ENABLE;
+  MPU_InitStruct.Number = MPU_REGION_NUMBER0;
+  MPU_InitStruct.BaseAddress = 0x0;
+  MPU_InitStruct.Size = MPU_REGION_SIZE_4GB;
+  MPU_InitStruct.SubRegionDisable = 0x87;
+  MPU_InitStruct.TypeExtField = MPU_TEX_LEVEL0;
+  MPU_InitStruct.AccessPermission = MPU_REGION_NO_ACCESS;
+  MPU_InitStruct.DisableExec = MPU_INSTRUCTION_ACCESS_DISABLE;
+  MPU_InitStruct.IsShareable = MPU_ACCESS_SHAREABLE;
+  MPU_InitStruct.IsCacheable = MPU_ACCESS_NOT_CACHEABLE;
+  MPU_InitStruct.IsBufferable = MPU_ACCESS_NOT_BUFFERABLE;
+
+  HAL_MPU_ConfigRegion(&MPU_InitStruct);
+  /* Enables the MPU */
+  HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
+
+}
+
+/**
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
+void Error_Handler(void)
+{
+  /* USER CODE BEGIN Error_Handler_Debug */
+  /* USER CODE END Error_Handler_Debug */
+}
+#ifdef USE_FULL_ASSERT
+/**
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
+void assert_failed(uint8_t *file, uint32_t line)
+{
+  /* USER CODE BEGIN 6 */
+  /* USER CODE END 6 */
+}
+#endif /* USE_FULL_ASSERT */

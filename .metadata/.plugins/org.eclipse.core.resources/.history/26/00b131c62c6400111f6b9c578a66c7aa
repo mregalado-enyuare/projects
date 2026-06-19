@@ -1,0 +1,37 @@
+/* USER CODE BEGIN Includes */
+#include <stdio.h>
+#include <string.h>
+#include "VL53L4CD_api.h"
+extern UART_HandleTypeDef huart2;
+/* USER CODE END Includes */
+
+/* USER CODE BEGIN PV */
+Dev_t dev = 0x52 << 1;
+VL53L4CD_ResultsData_t results;
+uint8_t isReady;
+uint8_t status;
+/* USER CODE END PV */
+
+/* USER CODE BEGIN 2 */
+status = VL53L4CD_SensorInit(dev);
+VL53L4CD_SetRangeTiming(dev, 50, 0);
+VL53L4CD_StartRanging(dev);
+/* USER CODE END 2 */
+
+/* USER CODE BEGIN WHILE */
+while (1)
+{
+/* USER CODE END WHILE */
+
+/* USER CODE BEGIN 3 */
+HAL_Delay(100);
+VL53L4CD_CheckForDataReady(dev, &isReady);
+if (isReady) {
+    VL53L4CD_GetResult(dev, &results);
+    VL53L4CD_ClearInterrupt(dev);
+    char buf[64];
+    int len = sprintf(buf, "Dist: %d mm\r\n", (int)results.distance_mm);
+    HAL_UART_Transmit(&huart2, (uint8_t*)buf, len, HAL_MAX_DELAY);
+}
+}
+/* USER CODE END 3 */

@@ -1,0 +1,10 @@
+09:42:33 **** Incremental Build of configuration Debug for project hole_detector ****
+make -j22 all 
+arm-none-eabi-size  hole_detector.elf 
+   text	   data	    bss	    dec	    hex	filename
+  30536	     96	   2160	  32792	   8018	hole_detector.elf
+Finished building: default.size.stdout
+ 
+
+09:42:34 Build Finished. 0 errors, 0 warnings. (took 464ms)
+

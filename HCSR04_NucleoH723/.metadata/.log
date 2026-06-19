@@ -1,0 +1,39 @@
+!SESSION 2026-06-03 12:17:32.623 -----------------------------------------------
+eclipse.buildId=Version 2.1.0
+java.version=21.0.9
+java.vendor=Eclipse Adoptium
+BootLoader constants: OS=win32, ARCH=x86_64, WS=win32, NL=en_US
+Command-line arguments:  -os win32 -ws win32 -arch x86_64
+
+!ENTRY com.st.stm32cube.ide.mcu.informationcenter 1 1 2026-06-03 12:18:31.584
+!MESSAGE Log4j2 initialized with config file C:\Users\mregalado_enyuare\STM32CubeIDE\workspace_2.1.0\HCSR04_NucleoH723\.metadata\.log4j2.xml
+
+!ENTRY com.st.stm32cube.ide.mcu.ide 1 1 2026-06-03 12:18:34.887
+!MESSAGE Started RMI Server, listening on port 41337
+
+!ENTRY com.st.stm32cube.ide.mpu.remote.serial 1 1 2026-06-03 12:18:35.803
+!MESSAGE Executed PowerShell command powershell.exe -Command "Get-CimInstance -ClassName Win32_SerialPort | Select-Object -ExpandProperty DeviceID":
+
+
+!ENTRY com.st.stm32cube.ide.mpu.remote.serial 1 1 2026-06-03 12:18:35.806
+!MESSAGE port: 
+!SESSION 2026-06-03 12:19:07.156 -----------------------------------------------
+eclipse.buildId=Version 2.1.0
+java.version=21.0.9
+java.vendor=Eclipse Adoptium
+BootLoader constants: OS=win32, ARCH=x86_64, WS=win32, NL=en_US
+Framework arguments:  C:\Users\mregalado_enyuare\STM32CubeIDE\workspace_2.1.0\HCSR04_NucleoH723\.project
+Command-line arguments:  -os win32 -ws win32 -arch x86_64 C:\Users\mregalado_enyuare\STM32CubeIDE\workspace_2.1.0\HCSR04_NucleoH723\.project
+
+!ENTRY com.st.stm32cube.ide.mcu.informationcenter 1 1 2026-06-03 12:19:15.670
+!MESSAGE Log4j2 initialized with config file C:\Users\mregalado_enyuare\STM32CubeIDE\workspace_2.1.0\HCSR04_NucleoH723\.metadata\.log4j2.xml
+
+!ENTRY com.st.stm32cube.ide.mcu.ide 1 1 2026-06-03 12:19:18.463
+!MESSAGE Started RMI Server, listening on port 41337
+
+!ENTRY com.st.stm32cube.ide.mpu.remote.serial 1 1 2026-06-03 12:19:28.134
+!MESSAGE Executed PowerShell command powershell.exe -Command "Get-CimInstance -ClassName Win32_SerialPort | Select-Object -ExpandProperty DeviceID":
+
+
+!ENTRY com.st.stm32cube.ide.mpu.remote.serial 1 1 2026-06-03 12:19:28.134
+!MESSAGE port: 

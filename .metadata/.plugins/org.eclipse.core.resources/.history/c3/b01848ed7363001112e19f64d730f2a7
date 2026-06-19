@@ -1,0 +1,104 @@
+#include "cup_detector.h"
+#include "hcsr04.h"
+
+SlotStatus_t slotStatus[6];
+
+#define HISTORY_SIZE  3
+#define EMPTY_CM      38.5f
+#define CUP_MIN_CM    18.0f
+#define CUP_MAX_CM    35.0f
+#define TRASH_MAX_CM  18.0f
+
+static float history[6][HISTORY_SIZE];
+static uint8_t histIndex[6]   = {0};
+static uint8_t histFull[6]    = {0};
+static uint8_t stableCount[6] = {0};
+static SlotStatus_t lastStatus[6] = {SLOT_EMPTY};
+
+static float GetAverage(uint8_t sensor)
+{
+    float sum = 0;
+    uint8_t count = histFull[sensor] ? HISTORY_SIZE : histIndex[sensor];
+    if(count == 0) return -1.0f;
+    for(uint8_t i = 0; i < count; i++)
+        sum += history[sensor][i];
+    return sum / count;
+}
+
+static SlotStatus_t ClassifyDistance(float d)
+{
+    if(d < 0)                           return SLOT_ERROR;
+    else if(d >= EMPTY_CM)              return SLOT_EMPTY;
+    else if(d >= CUP_MIN_CM &&
+            d <= CUP_MAX_CM)            return SLOT_CUP_PRESENT;
+    else if(d < TRASH_MAX_CM && d > 0)  return SLOT_TRASH;
+    else                                return SLOT_OBSTRUCTION;
+}
+
+void CupDetector_Update(void)
+{
+    for(int i = 0; i < NUM_SENSORS; i++)
+    {
+        float raw = sensors[i].distance_cm;
+
+        if(raw > 0)
+        {
+            history[i][histIndex[i]] = raw;
+            histIndex[i] = (histIndex[i] + 1) % HISTORY_SIZE;
+            if(histIndex[i] == 0) histFull[i] = 1;
+        }
+
+        float avg = GetAverage(i);
+        SlotStatus_t current = ClassifyDistance(avg);
+
+        if(current == lastStatus[i])
+        {
+            if(stableCount[i] < 2) stableCount[i]++;
+        }
+        else
+        {
+            stableCount[i] = 1;
+            lastStatus[i] = current;
+        }
+
+        if(stableCount[i] >= 2)
+            slotStatus[i] = current;
+    }
+}
+
+SystemStatus_t GetSystemConsensus(void)
+{
+    int cupCount   = 0;
+    int trashCount = 0;
+    int emptyCount = 0;
+
+    int slotSensors[3] = {0, 2, 4};
+
+    for(int i = 0; i < 3; i++)
+    {
+        int s = slotSensors[i];
+        switch(slotStatus[s])
+        {
+            case SLOT_CUP_PRESENT: cupCount++;   break;
+            case SLOT_TRASH:       trashCount++; break;
+            case SLOT_EMPTY:       emptyCount++; break;
+            default:               break;
+        }
+    }
+
+    if(cupCount > 0 && trashCount == 0)      return SYSTEM_CUP_DETECTED;
+    else if(trashCount > 0 && cupCount == 0) return SYSTEM_TRASH_DETECTED;
+    else if(emptyCount == 3)                 return SYSTEM_ALL_EMPTY;
+    else                                     return SYSTEM_MIXED;
+}
+
+uint8_t GetCupCount(void)
+{
+    uint8_t count = 0;
+
+    if(slotStatus[0] == SLOT_CUP_PRESENT) count++;
+    if(slotStatus[2] == SLOT_CUP_PRESENT) count++;
+    if(slotStatus[4] == SLOT_CUP_PRESENT) count++;
+
+    return count;
+}

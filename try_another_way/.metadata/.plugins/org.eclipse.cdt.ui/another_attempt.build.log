@@ -1,0 +1,10 @@
+16:34:32 **** Incremental Build of configuration Debug for project another_attempt ****
+make -j22 all 
+arm-none-eabi-size  another_attempt.elf 
+   text	   data	    bss	    dec	    hex	filename
+   7652	     16	   1568	   9236	   2414	another_attempt.elf
+Finished building: default.size.stdout
+ 
+
+16:34:32 Build Finished. 0 errors, 0 warnings. (took 300ms)
+

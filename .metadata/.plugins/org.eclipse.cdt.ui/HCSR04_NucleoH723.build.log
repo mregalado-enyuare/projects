@@ -1,0 +1,10 @@
+15:46:54 **** Incremental Build of configuration Debug for project HCSR04_NucleoH723 ****
+make -j22 all 
+arm-none-eabi-size  HCSR04_NucleoH723.elf 
+   text	   data	    bss	    dec	    hex	filename
+  23252	    136	   2160	  25548	   63cc	HCSR04_NucleoH723.elf
+Finished building: default.size.stdout
+ 
+
+15:46:54 Build Finished. 0 errors, 0 warnings. (took 340ms)
+

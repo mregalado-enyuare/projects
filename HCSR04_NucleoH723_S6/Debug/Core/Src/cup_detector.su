@@ -1,0 +1,5 @@
+../Core/Src/cup_detector.c:36:14:GetAverage	24	static
+../Core/Src/cup_detector.c:46:21:ClassifyDistance	24	static
+../Core/Src/cup_detector.c:63:6:CupDetector_Update	24	static
+../Core/Src/cup_detector.c:94:16:GetSystemConsensus	24	static
+../Core/Src/cup_detector.c:118:9:GetCupCount	24	static

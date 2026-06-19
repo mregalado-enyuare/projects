@@ -1,0 +1,31 @@
+#ifndef CUP_DETECTOR_H
+#define CUP_DETECTOR_H
+
+#include <stdint.h>
+
+typedef enum
+{
+    SLOT_EMPTY,
+    SLOT_CUP_PRESENT,
+    SLOT_TRASH,
+    SLOT_OBSTRUCTION,
+    SLOT_ERROR
+
+} SlotStatus_t;
+
+typedef enum
+{
+    SYSTEM_ALL_EMPTY,
+    SYSTEM_CUP_DETECTED,
+    SYSTEM_TRASH_DETECTED,
+    SYSTEM_MIXED
+
+} SystemStatus_t;
+
+extern SlotStatus_t slotStatus[6];
+
+void CupDetector_Update(void);
+SystemStatus_t GetSystemConsensus(void);
+uint8_t GetCupCount(void);
+
+#endif

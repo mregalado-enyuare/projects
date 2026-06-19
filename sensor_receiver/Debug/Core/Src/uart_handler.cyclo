@@ -1,0 +1,7 @@
+../Core/Src/uart_handler.c:12:6:UART_Init	1
+../Core/Src/uart_handler.c:16:6:UART_ReceiveIT	3
+../Core/Src/uart_handler.c:29:6:UART_ParseBuffer	1
+../Core/Src/uart_handler.c:37:6:UART_DebugPrint	1
+../Core/Src/uart_handler.c:43:7:UART_IsDataReady	1
+../Core/Src/uart_handler.c:44:7:UART_ClearDataReady	1
+../Core/Src/uart_handler.c:45:7:UART_GetBuffer	1

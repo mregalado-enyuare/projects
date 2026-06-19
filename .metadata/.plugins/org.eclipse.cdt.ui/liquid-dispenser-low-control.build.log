@@ -1,0 +1,10 @@
+15:00:52 **** Incremental Build of configuration Debug for project liquid-dispenser-low-control ****
+make -j22 all 
+arm-none-eabi-size  liquid-dispenser-low-control.elf 
+   text	   data	    bss	    dec	    hex	filename
+ 184588	  19767	 307672	 512027	  7d01b	liquid-dispenser-low-control.elf
+Finished building: default.size.stdout
+ 
+
+15:00:54 Build Finished. 0 errors, 0 warnings. (took 1s.325ms)
+
